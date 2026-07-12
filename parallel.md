@@ -1,3 +1,233 @@
+- [AI 推理 Infra 中的各种并行技术](#ai-推理-infra-中的各种并行技术)
+        - [1. 为什么推理系统需要并行](#1-为什么推理系统需要并行)
+- [2. 推理工作负载的基本特征](#2-推理工作负载的基本特征)
+        - [2.1 Transformer 中的主要张量](#21-transformer-中的主要张量)
+        - [2.2 KV Cache 显存](#22-kv-cache-显存)
+        - [2.3 Prefill 与 Decode](#23-prefill-与-decode)
+                - [Prefill](#prefill)
+                - [Decode](#decode)
+- [3. 分布式通信基础](#3-分布式通信基础)
+        - [3.1 Rank、Process Group 与 Collective](#31-rankprocess-group-与-collective)
+        - [3.2 通信成本模型](#32-通信成本模型)
+                - [小消息与大消息](#小消息与大消息)
+        - [3.3 如何定义“通信量”](#33-如何定义通信量)
+        - [3.4 Reduce：什么是归约](#34-reduce什么是归约)
+        - [3.5 Gather 与 Scatter](#35-gather-与-scatter)
+                - [Gather](#gather)
+                - [Scatter](#scatter)
+        - [3.6 AllGather](#36-allgather)
+                - [3.6.1 AllGather 的语义](#361-allgather-的语义)
+                - [3.6.2 Ring AllGather 的执行过程](#362-ring-allgather-的执行过程)
+                - [3.6.3 AllGather 通信量](#363-allgather-通信量)
+                - [3.6.4 AllGather 为什么不是发送 $(p-1)N/p$ 给每一个 Rank](#364-allgather-为什么不是发送-p-1np-给每一个-rank)
+                - [3.6.5 AllGather 的常见用途](#365-allgather-的常见用途)
+        - [3.7 ReduceScatter](#37-reducescatter)
+                - [3.7.1 ReduceScatter 的语义](#371-reducescatter-的语义)
+                - [3.7.2 将输入切成多个 Chunk](#372-将输入切成多个-chunk)
+                - [3.7.3 Ring ReduceScatter 的执行过程](#373-ring-reducescatter-的执行过程)
+                - [3.7.4 ReduceScatter 通信量](#374-reducescatter-通信量)
+                - [3.7.5 ReduceScatter 的常见用途](#375-reducescatter-的常见用途)
+        - [3.8 AllReduce](#38-allreduce)
+                - [3.8.1 AllReduce 的语义](#381-allreduce-的语义)
+                - [3.8.2 为什么 AllReduce 等于 ReduceScatter 加 AllGather](#382-为什么-allreduce-等于-reducescatter-加-allgather)
+                - [3.8.3 为什么可以分 Chunk 归约](#383-为什么可以分-chunk-归约)
+                - [3.8.4 Ring AllReduce 的通信量](#384-ring-allreduce-的通信量)
+                - [3.8.5 Ring AllReduce 的时间模型](#385-ring-allreduce-的时间模型)
+                - [3.8.6 AllReduce 在 TP 中的作用](#386-allreduce-在-tp-中的作用)
+        - [3.9 AllToAll](#39-alltoall)
+                - [3.9.1 AllToAll 的语义](#391-alltoall-的语义)
+                - [3.9.2 AllToAll 与 AllGather 的区别](#392-alltoall-与-allgather-的区别)
+                - [3.9.3 AllToAll 通信量](#393-alltoall-通信量)
+                - [3.9.4 AllToAll 在 EP 中的作用](#394-alltoall-在-ep-中的作用)
+        - [3.10 Point-to-Point](#310-point-to-point)
+                - [3.10.1 基本语义](#3101-基本语义)
+                - [3.10.2 P2P 在 PP 中的作用](#3102-p2p-在-pp-中的作用)
+                - [3.10.3 P2P 的同步问题](#3103-p2p-的同步问题)
+        - [3.11 几种通信原语的统一比较](#311-几种通信原语的统一比较)
+                - [AllGather](#allgather)
+                - [ReduceScatter](#reducescatter)
+                - [AllReduce](#allreduce)
+                - [AllToAll](#alltoall)
+                - [Point-to-Point](#point-to-point)
+        - [3.12 为什么相同通信量不代表相同性能](#312-为什么相同通信量不代表相同性能)
+                - [通信拓扑不同](#通信拓扑不同)
+                - [消息切分不同](#消息切分不同)
+                - [是否需要同步](#是否需要同步)
+                - [是否存在负载不均衡](#是否存在负载不均衡)
+                - [是否能与计算重叠](#是否能与计算重叠)
+        - [3.13 小结](#313-小结)
+- [4. Data Parallelism](#4-data-parallelism)
+        - [4.1 基本原理](#41-基本原理)
+        - [4.2 DP 的优点](#42-dp-的优点)
+        - [4.3 DP 的局限](#43-dp-的局限)
+        - [4.4 Continuous Batching](#44-continuous-batching)
+        - [4.5 Chunked Prefill](#45-chunked-prefill)
+- [5. Tensor Parallelism](#5-tensor-parallelism)
+        - [5.1 TP 在并行体系中的位置](#51-tp-在并行体系中的位置)
+        - [5.2 统一符号](#52-统一符号)
+        - [5.3 为什么线性层可以切分](#53-为什么线性层可以切分)
+        - [5.4 Column Parallel Linear](#54-column-parallel-linear)
+                - [5.4.1 切分方式](#541-切分方式)
+                - [5.4.2 为什么 Column Parallel 后可以不通信](#542-为什么-column-parallel-后可以不通信)
+                - [5.4.3 什么时候需要 AllGather](#543-什么时候需要-allgather)
+        - [5.5 Row Parallel Linear](#55-row-parallel-linear)
+                - [5.5.1 切分方式](#551-切分方式)
+                - [5.5.2 为什么需要归约](#552-为什么需要归约)
+                - [5.5.3 Row Parallel 的 AllReduce 通信量](#553-row-parallel-的-allreduce-通信量)
+        - [5.6 为什么要把 Column Parallel 和 Row Parallel 配对](#56-为什么要把-column-parallel-和-row-parallel-配对)
+        - [5.7 Attention 中的 TP](#57-attention-中的-tp)
+                - [5.7.1 QKV Projection](#571-qkv-projection)
+                - [5.7.2 本地 Attention](#572-本地-attention)
+                - [5.7.3 Output Projection](#573-output-projection)
+        - [5.8 MLP 中的 TP](#58-mlp-中的-tp)
+        - [5.9 每个 Transformer Layer 中有多少次 TP 通信](#59-每个-transformer-layer-中有多少次-tp-通信)
+        - [5.10 TP 通信量与张量形状](#510-tp-通信量与张量形状)
+        - [5.11 TP 与 Prefill、Decode 的差异](#511-tp-与-prefilldecode-的差异)
+                - [Prefill](#prefill)
+                - [Decode](#decode)
+        - [5.12 TP 与 MHA、GQA、MQA](#512-tp-与-mhagqamqa)
+        - [5.13 Vocab Parallelism](#513-vocab-parallelism)
+                - [输入 Embedding](#输入-embedding)
+                - [输出 LM Head](#输出-lm-head)
+        - [5.14 TP 的硬件拓扑要求](#514-tp-的硬件拓扑要求)
+        - [5.15 TP 的性能判断](#515-tp-的性能判断)
+- [6. Pipeline Parallelism](#6-pipeline-parallelism)
+        - [6.1 基本原理](#61-基本原理)
+        - [6.2 PP 的显存特点](#62-pp-的显存特点)
+        - [6.3 Pipeline Bubble](#63-pipeline-bubble)
+        - [6.4 PP 对单 Token 延迟的影响](#64-pp-对单-token-延迟的影响)
+        - [6.5 PP 的负载均衡](#65-pp-的负载均衡)
+- [7. Sequence Parallelism](#7-sequence-parallelism)
+        - [7.1 术语范围](#71-术语范围)
+        - [7.2 为什么普通 TP 仍然存在激活复制](#72-为什么普通-tp-仍然存在激活复制)
+        - [7.3 SP 的核心思想](#73-sp-的核心思想)
+        - [7.4 SP 如何与 TP 连接](#74-sp-如何与-tp-连接)
+                - [Sequence-Parallel Layout](#sequence-parallel-layout)
+                - [Tensor-Parallel Linear 所需布局](#tensor-parallel-linear-所需布局)
+        - [7.5 SP 中的 AllGather](#75-sp-中的-allgather)
+        - [7.6 SP 中的 ReduceScatter](#76-sp-中的-reducescatter)
+        - [7.7 一组 SP + TP 的完整过程](#77-一组-sp--tp-的完整过程)
+        - [7.8 为什么 SP 不会增加理论总通信量](#78-为什么-sp-不会增加理论总通信量)
+        - [7.9 SP 的真正收益](#79-sp-的真正收益)
+        - [7.10 SP 为什么在训练中更重要](#710-sp-为什么在训练中更重要)
+        - [7.11 SP 与 CP 的区别](#711-sp-与-cp-的区别)
+- [8. Context Parallelism](#8-context-parallelism)
+        - [8.1 基本原理](#81-基本原理)
+        - [8.2 CP 与 SP 的区别](#82-cp-与-sp-的区别)
+- [9. Ulysses Parallelism](#9-ulysses-parallelism)
+        - [9.1 UP 的目标](#91-up-的目标)
+        - [9.2 UP 与普通 SP 的区别](#92-up-与普通-sp-的区别)
+        - [9.3 初始张量布局](#93-初始张量布局)
+        - [9.4 为什么这种布局不能直接独立算完整 Attention](#94-为什么这种布局不能直接独立算完整-attention)
+        - [9.5 Ulysses 的 AllToAll 布局转换](#95-ulysses-的-alltoall-布局转换)
+        - [9.6 为什么 AllToAll 能实现这个转换](#96-为什么-alltoall-能实现这个转换)
+        - [9.7 本地 Attention](#97-本地-attention)
+        - [9.8 反向 AllToAll](#98-反向-alltoall)
+        - [9.9 UP 的通信量](#99-up-的通信量)
+        - [9.10 UP 的通信成本不仅由字节数决定](#910-up-的通信成本不仅由字节数决定)
+        - [9.11 UP 的 Head 数限制](#911-up-的-head-数限制)
+        - [9.12 UP 与 GQA、MQA](#912-up-与-gqamqa)
+        - [9.13 UP 为什么更适合 Prefill](#913-up-为什么更适合-prefill)
+        - [9.14 UP 与 Ring Attention 的比较](#914-up-与-ring-attention-的比较)
+- [10. Ring Attention](#10-ring-attention)
+        - [10.1 基本思想](#101-基本思想)
+        - [10.2 Online Softmax](#102-online-softmax)
+        - [10.3 Ring Attention 的优缺点](#103-ring-attention-的优缺点)
+        - [10.4 Ulysses 与 Ring Attention 的区别](#104-ulysses-与-ring-attention-的区别)
+- [11. Decode 阶段的 Context Parallelism](#11-decode-阶段的-context-parallelism)
+- [12. Expert Parallelism](#12-expert-parallelism)
+        - [12.1 EP 的背景：为什么 MoE 需要不同的并行方式](#121-ep-的背景为什么-moe-需要不同的并行方式)
+        - [12.2 MoE Layer 的整体流程](#122-moe-layer-的整体流程)
+        - [12.3 Router](#123-router)
+        - [12.4 为什么需要 Token Permute](#124-为什么需要-token-permute)
+        - [12.5 Dispatch AllToAll](#125-dispatch-alltoall)
+        - [12.6 为什么 MoE 通常需要 AllToAllV](#126-为什么-moe-通常需要-alltoallv)
+        - [12.7 EP Dispatch 通信量](#127-ep-dispatch-通信量)
+        - [12.8 非均匀路由下的通信量](#128-非均匀路由下的通信量)
+        - [12.9 本地 Expert 分组](#129-本地-expert-分组)
+        - [12.10 Grouped GEMM](#1210-grouped-gemm)
+        - [12.11 Combine AllToAll](#1211-combine-alltoall)
+        - [12.12 EP 的两次通信为什么通常无法省掉](#1212-ep-的两次通信为什么通常无法省掉)
+        - [12.13 EP 与 TP 的区别](#1213-ep-与-tp-的区别)
+                - [TP](#tp)
+                - [EP](#ep)
+        - [12.14 Expert Tensor Parallelism](#1214-expert-tensor-parallelism)
+        - [12.15 EP 的负载不均衡](#1215-ep-的负载不均衡)
+        - [12.16 Capacity 与 Token Drop](#1216-capacity-与-token-drop)
+        - [12.17 Expert Replication](#1217-expert-replication)
+        - [12.18 Expert Placement](#1218-expert-placement)
+        - [12.19 Hierarchical AllToAll](#1219-hierarchical-alltoall)
+        - [12.20 Decode 阶段为什么对 EP 特别困难](#1220-decode-阶段为什么对-ep-特别困难)
+        - [12.21 Attention DP + Expert EP](#1221-attention-dp--expert-ep)
+        - [12.22 EP 的通信与计算重叠](#1222-ep-的通信与计算重叠)
+        - [12.23 EP 性能分析](#1223-ep-性能分析)
+        - [12.24 TP、SP、UP、EP 的统一比较](#1224-tpspupep-的统一比较)
+                - [12.24.1 切分对象](#12241-切分对象)
+                - [12.24.2 主要通信](#12242-主要通信)
+                - [12.24.3 通信数据的性质](#12243-通信数据的性质)
+                - [12.24.4 主要目标](#12244-主要目标)
+                - [12.24.5 对推理阶段的适用性](#12245-对推理阶段的适用性)
+                - [Prefill](#prefill)
+                - [Decode](#decode)
+                - [12.24.6 最核心的判断原则](#12246-最核心的判断原则)
+- [13. Attention DP 与 Expert EP](#13-attention-dp-与-expert-ep)
+- [14. Prefill–Decode Disaggregation](#14-prefilldecode-disaggregation)
+        - [14.1 基本原理](#141-基本原理)
+        - [14.2 PD 分离的收益](#142-pd-分离的收益)
+        - [14.3 KV Cache 传输](#143-kv-cache-传输)
+        - [14.4 Prefill 与 Decode 的 TP Degree 不同](#144-prefill-与-decode-的-tp-degree-不同)
+        - [14.5 PD 分离并非总是更好](#145-pd-分离并非总是更好)
+- [15. Attention–FFN Disaggregation](#15-attentionffn-disaggregation)
+- [16. Speculative Decoding](#16-speculative-decoding)
+- [17. DiT 和视频生成中的并行技术](#17-dit-和视频生成中的并行技术)
+        - [17.1 DiT 的计算特征](#171-dit-的计算特征)
+        - [17.2 DiT Data Parallelism](#172-dit-data-parallelism)
+        - [17.3 CFG Parallelism](#173-cfg-parallelism)
+        - [17.4 DiT Sequence Parallelism](#174-dit-sequence-parallelism)
+        - [17.5 PipeFusion](#175-pipefusion)
+        - [17.6 DiT 混合并行](#176-dit-混合并行)
+- [18. 混合并行与 Process Group](#18-混合并行与-process-group)
+        - [18.1 经典 3D Parallelism](#181-经典-3d-parallelism)
+        - [18.2 EP 不一定是简单独立维度](#182-ep-不一定是简单独立维度)
+- [19. 典型配置示例](#19-典型配置示例)
+        - [19.1 模型能放入单卡，追求吞吐](#191-模型能放入单卡追求吞吐)
+        - [19.2 70B Dense 模型，单节点 8 卡](#192-70b-dense-模型单节点-8-卡)
+        - [19.3 模型无法放入一个节点](#193-模型无法放入一个节点)
+        - [19.4 长上下文模型](#194-长上下文模型)
+        - [19.5 大型 MoE 模型](#195-大型-moe-模型)
+        - [19.6 视频 DiT](#196-视频-dit)
+- [20. 如何选择并行方案](#20-如何选择并行方案)
+        - [20.1 第一步：估算显存](#201-第一步估算显存)
+        - [20.2 如果模型权重放不下](#202-如果模型权重放不下)
+        - [20.3 如果 KV Cache 放不下](#203-如果-kv-cache-放不下)
+        - [20.4 如果目标是降低 TTFT](#204-如果目标是降低-ttft)
+        - [20.5 如果目标是降低 TPOT](#205-如果目标是降低-tpot)
+        - [20.6 如果目标是提高吞吐量](#206-如果目标是提高吞吐量)
+        - [20.7 如果目标是支持超长上下文](#207-如果目标是支持超长上下文)
+- [21. 并行策略与网络拓扑](#21-并行策略与网络拓扑)
+- [22. 常见误区](#22-常见误区)
+        - [22.1 GPU 越多一定越快](#221-gpu-越多一定越快)
+        - [22.2 DP 可以降低单请求延迟](#222-dp-可以降低单请求延迟)
+        - [22.3 TP Degree 越大越好](#223-tp-degree-越大越好)
+        - [22.4 PP 可以直接降低单 Token 延迟](#224-pp-可以直接降低单-token-延迟)
+        - [22.5 Sequence Parallelism 就是 Context Parallelism](#225-sequence-parallelism-就是-context-parallelism)
+        - [22.6 EP 消除了 MoE 通信](#226-ep-消除了-moe-通信)
+        - [22.7 PD 分离一定优于聚合部署](#227-pd-分离一定优于聚合部署)
+- [23. 性能分析方法](#23-性能分析方法)
+        - [23.1 服务层指标](#231-服务层指标)
+        - [23.2 GPU 指标](#232-gpu-指标)
+        - [23.3 通信指标](#233-通信指标)
+        - [23.4 MoE 指标](#234-moe-指标)
+        - [23.5 调度指标](#235-调度指标)
+- [24. 从 Nsight Systems 时间线判断问题](#24-从-nsight-systems-时间线判断问题)
+        - [24.1 GEMM 很短，NCCL 很长](#241-gemm-很短nccl-很长)
+        - [24.2 Pipeline Stage 大量空闲](#242-pipeline-stage-大量空闲)
+        - [24.3 EP Rank 执行时间差异很大](#243-ep-rank-执行时间差异很大)
+        - [24.4 Decode 被长 Prefill 阻塞](#244-decode-被长-prefill-阻塞)
+        - [24.5 GPU 利用率高但延迟仍然很差](#245-gpu-利用率高但延迟仍然很差)
+- [25. 总结](#25-总结)
+
+
 # AI 推理 Infra 中的各种并行技术
 
 ## 1. 为什么推理系统需要并行
@@ -209,19 +439,11 @@ $$
 
 于是：
 
-$$
-T_{\text{comm}}
-\approx
-\alpha+\frac{N}{BW}
-$$
+$$T_{\text{comm}}\approx\alpha+\frac{N}{BW}$$
 
 但一个 Collective 通常不只包含一步通信。如果算法需要执行 $s$ 个通信步骤，更准确的近似是：
 
-$$
-T_{\text{comm}}
-\approx
-s\alpha+\beta V
-$$
+$$T_{\text{comm}}\approxs\alpha+\beta V$$
 
 其中 $V$ 是每个 Rank 在整个 Collective 中发送的数据总量。
 
@@ -274,10 +496,7 @@ Decode 阶段尤其容易受到 $\alpha$ 的影响，因为每一步 Decode 的�
 本文默认：
 
 $$
-\text{通信量}
-==========
-
-\text{每个 Rank 的发送量}
+\text{通信量}=\text{每个 Rank 的发送量}
 $$
 
 同时，数据在本地 GPU 内部进行的复制不计入网络通信量。
@@ -297,19 +516,13 @@ $$
 使用求和归约后得到：
 
 $$
-Y
-=
-
-\sum_{r=0}^{p-1}X^{(r)}
+Y=\sum_{r=0}^{p-1}X^{(r)}
 $$
 
 这是逐元素求和，即：
 
 $$
-Y_j
-===
-
-\sum_{r=0}^{p-1}X_j^{(r)}
+Y_j=\sum_{r=0}^{p-1}X_j^{(r)}
 $$
 
 除了求和，常见归约操作还包括：
@@ -325,9 +538,7 @@ $$
 在浮点数计算中，加法并不严格满足数学上的结合律：
 
 $$
-(a+b)+c
-\neq
-a+(b+c)
+(a+b)+c\neq a+(b+c)
 $$
 
 因此，不同通信算法、不同 Rank 数量或不同归约顺序，可能产生很小的浮点误差差异。
@@ -936,9 +1147,9 @@ $$
 $$
 W=
 \begin{bmatrix}
-W_0\
-W_1\
-\vdots\
+W_0 \\
+W_1 \\
+\vdots \\
 W_{p-1}
 \end{bmatrix}
 $$
@@ -1538,263 +1749,697 @@ Decode Batch
 
 # 5. Tensor Parallelism
 
-## 5.1 基本原理
+## 5.1 TP 在并行体系中的位置
 
-Tensor Parallelism，简称 TP，是把单个算子的权重张量切分到多张 GPU 上。
+TP（Tensor Parallelism，张量并行）是把一个算子内部的权重张量和计算任务切分到多张 GPU 上。
 
-它属于层内并行，即多张 GPU 同时计算 Transformer 的同一层。
+它属于层内模型并行，即多张 GPU 同时执行 Transformer 的同一层：
 
-考虑线性层：
+```text
+同一个 Transformer Layer：
 
-$$
-Y=XW
-$$
+Rank 0 ─┐
+Rank 1 ─┼─ 共同计算这一层
+Rank 2 ─┼─
+Rank 3 ─┘
+```
 
-其中：
+TP 主要解决两个问题：
 
-$$
-X\in\mathbb{R}^{M\times H},
-\qquad
-W\in\mathbb{R}^{H\times I}
-$$
+1. 单张 GPU 无法容纳完整模型权重；
+2. 希望多张 GPU 同时计算一个请求，缩短大矩阵运算时间。
 
-TP 的核心方式包括 Column Parallel 和 Row Parallel。
+但 TP 也会把原本位于一张 GPU 内部的数据依赖，变成跨 GPU 通信。TP 的核心问题因此不是“能不能把矩阵切开”，而是：
+
+> 如何选择切分方式，使连续两个线性层之间尽量少通信？
+
+Megatron 风格 TP 的关键设计，就是将 Column Parallel Linear 与 Row Parallel Linear 成对使用，从而把两个线性层之间的中间激活保持为分片状态，只在必要的位置执行归约。
 
 ---
 
-## 5.2 Column Parallel Linear
+## 5.2 统一符号
 
-将权重 $W$ 沿输出维度切分：
+为了避免 Batch、Sequence 和 Token 维度反复出现，先把前导维度展平。
 
-$$
-W=[W_0,W_1,\ldots,W_{p-1}]
-$$
+设输入隐藏状态为：
+
+$$X\in\mathbb{R}^{M\times H}$$
 
 其中：
 
-$$
-W_i\in\mathbb{R}^{H\times I/p}
-$$
+* $M$ 表示参与当前线性层计算的 token 数，通常有 $M=B\times S$；
+* $B$ 是 batch size；
+* $S$ 是序列长度；
+* $H$ 是 hidden size。
 
-每张 GPU 计算：
+线性层权重为：
 
-$$
-Y_i=XW_i
-$$
+$$W\in\mathbb{R}^{H\times I}$$
+
+输出为：
+
+$$Y=XW\in\mathbb{R}^{M\times I}$$
+
+假设 TP Group 中有 $p$ 个 Rank。
+
+如果张量元素占用 $b$ 字节，则完整输出 $Y$ 的数据量为：
+
+$$N_Y=MIb$$
+
+---
+
+## 5.3 为什么线性层可以切分
+
+矩阵乘法：
+
+$$Y=XW$$
+
+既可以沿输出维度切，也可以沿输入维度切。
+
+沿输出维度切分时，不同 Rank 负责产生不同的输出特征；沿输入维度切分时，不同 Rank 产生同一个输出的局部贡献，最后需要把局部贡献相加。
+
+这分别对应：
+
+* Column Parallel Linear；
+* Row Parallel Linear。
+
+---
+
+## 5.4 Column Parallel Linear
+
+### 5.4.1 切分方式
+
+将权重 $W$ 沿输出维度 $I$ 切成 $p$ 份：
+
+$$W=[W_0,W_1,\ldots,W_{p-1}]$$
+
+其中：
+
+$$W_r\in\mathbb{R}^{H\times I/p}$$
+
+每个 Rank 都持有完整输入 $X$，但只持有一部分权重：
+
+```text
+Rank 0：W0
+Rank 1：W1
+...
+Rank p-1：Wp-1
+```
+
+第 $r$ 个 Rank 计算：
+
+$$Y_r=XW_r$$
+
+其中：
+
+$$Y_r\in\mathbb{R}^{M\times I/p}$$
 
 完整输出为：
 
-$$
-Y=[Y_0,Y_1,\ldots,Y_{p-1}]
-$$
+$$Y=[Y_0,Y_1,\ldots,Y_{p-1}]$$
 
-因为每张 GPU 产生不同的输出特征分片，所以称为 Column Parallel。
-
-如果下一层能够直接消费分片形式的 $Y_i$，则这里不需要立即执行通信。
-
-Transformer 中通常使用 Column Parallel 的位置包括：
-
-* Q Projection；
-* K Projection；
-* V Projection；
-* MLP Gate Projection；
-* MLP Up Projection。
+不同 Rank 计算的是不同输出列，因此称为 Column Parallel Linear。
 
 ---
 
-## 5.3 Row Parallel Linear
+### 5.4.2 为什么 Column Parallel 后可以不通信
 
-将输入 $X$ 沿 hidden dimension 切分：
+Column Parallel 的每个 Rank 已经得到完整输出的一部分。
 
-$$
-X=[X_0,X_1,\ldots,X_{p-1}]
-$$
+如果下一步计算本身也能沿这一维度切分，就不需要立即把 $Y_0,\ldots,Y_{p-1}$ 收集起来。
 
-同时将权重 $W$ 沿输入维度切分：
+例如 MLP（Multi-Layer Perceptron，多层感知机）的第一个线性层：
 
-$$
-W=
-\begin{bmatrix}
-W_0\
-W_1\
-\vdots\
-W_{p-1}
-\end{bmatrix}
-$$
+$$Z=XW_{\text{up}}$$
 
-每张 GPU 计算局部结果：
-
-$$
-Y_i=X_iW_i
-$$
-
-完整输出是所有局部结果之和：
-
-$$
-Y=\sum_{i=0}^{p-1}Y_i
-$$
-
-因此需要执行 AllReduce 或 ReduceScatter。
-
-Transformer 中通常使用 Row Parallel 的位置包括：
-
-* Attention Output Projection；
-* MLP Down Projection。
-
----
-
-## 5.4 Transformer Layer 中的 TP
-
-一个典型 Transformer Layer 的 TP 布局如下：
+通常把 Intermediate Size 沿输出维度切分：
 
 ```text
-输入 X
-  │
-  ├─ QKV Column Parallel
-  │      每张 GPU 负责部分 Attention Heads
-  │
-  ├─ Attention
-  │
-  ├─ Output Projection Row Parallel
-  │
-  ├─ AllReduce / ReduceScatter
-  │
-  ├─ Gate + Up Projection Column Parallel
-  │
-  ├─ Activation
-  │
-  ├─ Down Projection Row Parallel
-  │
-  ├─ AllReduce / ReduceScatter
-  │
-  └─ 输出
+Rank 0：Z0
+Rank 1：Z1
+...
+Rank p-1：Zp-1
 ```
 
-经典 Megatron 风格 TP 中，每个 Transformer Layer 通常存在两次主要跨卡同步：
+激活函数是逐元素操作：
 
-1. Attention Output Projection 之后；
-2. MLP Down Projection 之后。
+$$A_r=\sigma(Z_r)$$
 
-对于一个包含 $L$ 层的模型，一次 Decode Step 中可能需要大约 $2L$ 次 TP collective。
+每个 Rank 可以直接在本地计算自己的分片，不需要知道其他 Rank 的 $Z$。
 
----
-
-## 5.5 TP 的显存收益
-
-理想情况下，TP Degree 为 $p$ 时，每张 GPU 保存约 $1/p$ 的分片权重：
-
-$$
-M_{\text{weight, per GPU}}
-\approx
-\frac{M_{\text{weight}}}{p}
-$$
-
-对于可以按 Head 切分的 KV Cache，每张 GPU也可能只保存一部分 KV Head：
-
-$$
-M_{\text{KV, per GPU}}
-\approx
-\frac{M_{\text{KV}}}{p}
-$$
-
-但对于 GQA 或 MQA，这个关系未必成立，因为 KV Head 数量可能小于 TP Degree。
-
----
-
-## 5.6 TP 为什么不能无限增大
-
-TP Degree 增大后，每张 GPU 的计算量会减少，但通信次数通常不会减少。
-
-假设 Decode 中的线性层原本为：
-
-$$
-[B,H]\times[H,I]
-$$
-
-使用 TP Degree $p$ 后，每张 GPU 计算：
-
-$$
-[B,H]\times[H,I/p]
-$$
-
-如果 $B$ 很小，$I/p$ 也很小，单张 GPU 上的 GEMM 会变得非常瘦，导致：
-
-* Tensor Core 利用率下降；
-* kernel launch 开销占比增大；
-* 通信时间超过计算时间；
-* GPU 数量增加但延迟不降反升。
-
-因此，TP 的收益取决于：
-
-$$
-\text{节省的计算时间}
-
->
-
-\text{新增的通信与同步时间}
-$$
-
----
-
-## 5.7 TP 与硬件拓扑
-
-TP 通信发生得非常频繁，因此通常应限制在高速互联域中。
-
-优先级通常是：
+因此：
 
 ```text
-NVSwitch / NVLink
-    优于
-PCIe
-    优于
-跨节点 InfiniBand / RoCE
+Column Parallel Linear
+        ↓
+分片输出
+        ↓
+本地 Activation
 ```
 
-工程上常见的部署方式是：
-
-* 节点内使用 TP；
-* 节点之间使用 PP 或 DP。
+中间没有通信。
 
 ---
 
-## 5.8 TP 与 MHA、GQA、MQA
+### 5.4.3 什么时候需要 AllGather
 
-对于 MHA，可以自然地按 Attention Head 切分：
+如果后续算子要求每个 Rank 都获得完整 $Y$，则需要执行 AllGather：
 
 ```text
-GPU 0：Heads 0～7
-GPU 1：Heads 8～15
-GPU 2：Heads 16～23
-GPU 3：Heads 24～31
+初始：
+Rank 0：Y0
+Rank 1：Y1
+...
+Rank p-1：Yp-1
+
+AllGather 后：
+所有 Rank：[Y0,Y1,...,Yp-1]
 ```
 
-对于 GQA，Query Head 数大于 KV Head 数。例如：
+完整输出大小为 $N_Y$，每个 Rank 初始持有 $N_Y/p$。
+
+Ring AllGather 中，每 Rank 的发送量为：
+
+$$V_{\text{AllGather}}=\frac{p-1}{p}N_Y$$
+
+不过，经典 Transformer TP 会尽量避免在 Column Parallel 后立即 AllGather，而是让下一层直接消费分片结果。
+
+---
+
+## 5.5 Row Parallel Linear
+
+### 5.5.1 切分方式
+
+Row Parallel Linear 将输入 $X$ 沿 hidden dimension 切分：
+
+$$X=[X_0,X_1,\ldots,X_{p-1}]$$
+
+其中：
+
+$$X_r\in\mathbb{R}^{M\times H/p}$$
+
+权重 $W$ 沿输入维度切分：
+
+$$W=\begin{bmatrix}W_0 \\ W_1 \\ \vdots \\ W_{p-1}\end{bmatrix}$$
+
+其中：
+
+$$W_r\in\mathbb{R}^{H/p\times I}$$
+
+第 $r$ 个 Rank 计算：
+
+$$Y^{(r)}=X_rW_r$$
+
+需要注意，每个 $Y^{(r)}$ 都具有完整输出形状：
+
+$$Y^{(r)}\in\mathbb{R}^{M\times I}$$
+
+但是它只是完整输出的一部分数值贡献，而不是输出维度上的一个分片。
+
+---
+
+### 5.5.2 为什么需要归约
+
+根据分块矩阵乘法：
+
+$$XW=[X_0,X_1,\ldots,X_{p-1}]\begin{bmatrix}W_0 \\ W_1 \\ \vdots \\ W_{p-1}\end{bmatrix}$$
+
+展开后：
+
+$$Y=\sum_{r=0}^{p-1}X_rW_r$$
+
+也就是：
+
+$$Y=\sum_{r=0}^{p-1}Y^{(r)}$$
+
+因此，不同 Rank 的局部结果必须逐元素相加。
+
+如果所有 Rank 都需要完整输出 $Y$，就执行 AllReduce。
+
+---
+
+### 5.5.3 Row Parallel 的 AllReduce 通信量
+
+每个 Rank 的局部输出大小都是 $N_Y=MIb$。
+
+Ring AllReduce 的每 Rank 发送量为：
+
+$$V_{\text{AllReduce}}=2\frac{p-1}{p}N_Y$$
+
+其中：
+
+$$\text{AllReduce}=\text{ReduceScatter}+\text{AllGather}$$
+
+因此：
+
+$$V_{\text{AllReduce}}=\frac{p-1}{p}N_Y+\frac{p-1}{p}N_Y$$
+
+这里需要特别注意：虽然每张 GPU 只保存了 $1/p$ 的 Row Parallel 权重，但其局部输出 $Y^{(r)}$ 仍然具有完整输出形状。
+
+所以 Row Parallel 的通信量由输出激活大小决定，而不是由每 Rank 权重大小决定。
+
+---
+
+## 5.6 为什么要把 Column Parallel 和 Row Parallel 配对
+
+考虑一个两层 MLP：
+
+$$Y=\sigma(XW_1)W_2$$
+
+设：
+
+$$W_1\in\mathbb{R}^{H\times I}$$
+
+$$W_2\in\mathbb{R}^{I\times H}$$
+
+第一层使用 Column Parallel：
+
+$$W_1=[W_{1,0},W_{1,1},\ldots,W_{1,p-1}]$$
+
+每个 Rank 得到：
+
+$$Z_r=XW_{1,r}$$
+
+其中：
+
+$$Z_r\in\mathbb{R}^{M\times I/p}$$
+
+本地执行激活：
+
+$$A_r=\sigma(Z_r)$$
+
+第二层使用 Row Parallel，每个 Rank 保存：
+
+$$W_{2,r}\in\mathbb{R}^{I/p\times H}$$
+
+于是可以直接使用本地 $A_r$：
+
+$$Y^{(r)}=A_rW_{2,r}$$
+
+最后执行：
+
+$$Y=\sum_{r=0}^{p-1}Y^{(r)}$$
+
+整体过程为：
+
+```text
+完整输入 X
+    │
+    ▼
+Column Parallel W1
+    │
+各 Rank 得到不同 Intermediate 分片
+    │
+    ▼
+本地 Activation
+    │
+    ▼
+Row Parallel W2
+    │
+各 Rank 得到完整输出的局部贡献
+    │
+    ▼
+AllReduce
+    │
+    ▼
+完整输出 Y
+```
+
+这种配对只在第二个线性层后通信一次。
+
+如果第一层 Column Parallel 后立即 AllGather，再执行完整的第二层，就会产生额外通信和权重复制，失去 TP 的意义。
+
+---
+
+## 5.7 Attention 中的 TP
+
+### 5.7.1 QKV Projection
+
+设输入为：
+
+$$X\in\mathbb{R}^{B\times S\times H}$$
+
+QKV Projection 通常使用 Column Parallel。
+
+对于 MHA（Multi-Head Attention，多头注意力），设 Attention Head 数为 $N_h$，每个 Head 维度为 $D_h$：
+
+$$H=N_hD_h$$
+
+TP Degree 为 $p$ 时，每个 Rank 通常负责：
+
+$$\frac{N_h}{p}$$
+
+个 Attention Heads。
+
+例如：
+
+```text
+N_h = 32
+TP  = 4
+
+Rank 0：Head 0～7
+Rank 1：Head 8～15
+Rank 2：Head 16～23
+Rank 3：Head 24～31
+```
+
+Q、K、V 的本地形状大致为：
+
+$$Q_r,K_r,V_r\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
+
+因为每个 Head 的 Attention 可以独立计算，所以 QKV Projection 后不需要立即通信。
+
+---
+
+### 5.7.2 本地 Attention
+
+每个 Rank 对自己持有的 Head 执行：
+
+$$O_r=\operatorname{Attention}(Q_r,K_r,V_r)$$
+
+其中：
+
+$$O_r\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
+
+将 Head 维度展平后：
+
+$$O_r\in\mathbb{R}^{B\times S\times H/p}$$
+
+此时各 Rank 持有 Attention 输出的 hidden-dimension 分片。
+
+---
+
+### 5.7.3 Output Projection
+
+Attention Output Projection 为：
+
+$$Y=OW_O$$
+
+输入 $O$ 已沿 hidden dimension 切分，因此 $W_O$ 自然使用 Row Parallel。
+
+每个 Rank 计算：
+
+$$Y^{(r)}=O_rW_{O,r}$$
+
+最后：
+
+$$Y=\sum_{r=0}^{p-1}Y^{(r)}$$
+
+因此需要一次 AllReduce，或者在结合 SP 时使用 ReduceScatter。
+
+---
+
+## 5.8 MLP 中的 TP
+
+对于普通 Transformer MLP：
+
+$$Z=\sigma(XW_{\text{up}})W_{\text{down}}$$
+
+其中：
+
+$$W_{\text{up}}\in\mathbb{R}^{H\times I}$$
+
+$$W_{\text{down}}\in\mathbb{R}^{I\times H}$$
+
+通常采用：
+
+* Up Projection：Column Parallel；
+* Down Projection：Row Parallel。
+
+对于 SwiGLU（Swish-Gated Linear Unit，Swish 门控线性单元）等门控 MLP：
+
+$$Z=\operatorname{SiLU}(XW_{\text{gate}})\odot XW_{\text{up}}$$
+
+Gate Projection 和 Up Projection 都使用 Column Parallel，并沿相同 Intermediate Dimension 切分。
+
+每个 Rank 本地计算：
+
+$$Z_r=\operatorname{SiLU}(XW_{\text{gate},r})\odot XW_{\text{up},r}$$
+
+之后通过 Row Parallel Down Projection 恢复 hidden size，并执行一次归约。
+
+---
+
+## 5.9 每个 Transformer Layer 中有多少次 TP 通信
+
+经典 Megatron 风格 Transformer Layer 通常包含两组 Column–Row 配对：
+
+```text
+第一组：
+QKV Column Parallel
+→ Attention
+→ Output Row Parallel
+→ AllReduce
+
+第二组：
+Gate/Up Column Parallel
+→ Activation
+→ Down Row Parallel
+→ AllReduce
+```
+
+因此，每层通常有两次主要 TP AllReduce。
+
+对于 $L$ 层模型，一次完整 Forward 可能包含约：
+
+$$2L$$
+
+次 TP Collective。
+
+在 Decode 阶段，每生成一个 token 都要经过全部 $L$ 层，因此可能每生成一个 token 就执行约 $2L$ 次跨 Rank 同步。
+
+这正是 TP 对通信延迟非常敏感的原因。
+
+---
+
+## 5.10 TP 通信量与张量形状
+
+假设每个 Row Parallel 输出张量为：
+
+$$Y\in\mathbb{R}^{B\times S\times H}$$
+
+数据量为：
+
+$$N_Y=BSHb$$
+
+一次 Ring AllReduce 的每 Rank 发送量为：
+
+$$V_{\text{AR}}=2\frac{p-1}{p}BSHb$$
+
+如果每层有两次相同大小的 AllReduce，则每层每 Rank 发送量近似为：
+
+$$V_{\text{TP, layer}}=4\frac{p-1}{p}BSHb$$
+
+对于 $L$ 层：
+
+$$V_{\text{TP, model}}=4L\frac{p-1}{p}BSHb$$
+
+这只是简化估算。实际通信量还会受到以下因素影响：
+
+* Attention 和 MLP 输出形状是否完全相同；
+* 是否使用 SP；
+* 是否融合 Residual；
+* 是否使用量化通信；
+* 是否使用异步 Collective；
+* 是否存在额外的 Vocab Parallel 通信。
+
+对于 Decode，通常 $S=1$，但 $B$ 是当前 Decode Batch 中的活跃请求数。
+
+此时通信张量可能不大，却需要执行大量 Collective，因此更容易 latency-bound。
+
+---
+
+## 5.11 TP 与 Prefill、Decode 的差异
+
+### Prefill
+
+Prefill 中：
+
+$$M=B\times S$$
+
+通常较大。
+
+每张 GPU 上的 GEMM 规模较大，TP 可以有效分摊计算。与此同时，通信张量也较大，更容易充分利用链路带宽。
+
+因此 Prefill 中 TP 往往具有较好的扩展性。
+
+### Decode
+
+Decode 中通常：
+
+$$M=B$$
+
+如果并发较低，$B$ 很小。
+
+增加 TP Degree 后，每个 Rank 的 GEMM 输出维度继续缩小，但 AllReduce 次数不变。此时可能出现：
+
+* GEMM 时间快速下降；
+* Collective 固定延迟基本不变；
+* 通信占总延迟的比例升高；
+* GPU 数量增加但 TPOT 不再下降。
+
+所以 Decode 的最优 TP Degree 往往小于“模型能够使用的最大 TP Degree”。
+
+---
+
+## 5.12 TP 与 MHA、GQA、MQA
+
+MHA 中通常有：
+
+$$N_q=N_{kv}$$
+
+因此可以自然地按 Head 切分。
+
+GQA（Grouped-Query Attention，分组查询注意力）中：
+
+$$N_q>N_{kv}$$
+
+MQA（Multi-Query Attention，多查询注意力）中通常有：
+
+$$N_{kv}=1$$
+
+如果 TP Degree 为 $p$，理想情况要求 Query Head 和 KV Head 能够合理分配到各 Rank。
+
+例如：
 
 ```text
 Query Heads = 64
 KV Heads    = 8
-TP Degree   = 8
+TP          = 8
 ```
 
-每张 GPU 可以保存一个 KV Head。
+每个 Rank 可以持有：
+
+```text
+8 个 Query Heads
+1 个 KV Head
+```
 
 但如果：
 
 ```text
 Query Heads = 64
 KV Heads    = 8
-TP Degree   = 16
+TP          = 16
 ```
 
-KV Head 数不足以继续均匀分片。系统可能需要：
+KV Head 数少于 TP Rank 数。此时可能采用：
 
-* 复制 KV Head；
-* 让多个 TP Rank 共享同一 KV Head；
-* 使用不均匀分片；
+* 在多个 Rank 上复制同一个 KV Head；
+* 让若干 Rank 组成一个 KV Head Sharing Group；
+* 对 Q 与 KV 使用不同切分方式；
 * 限制 TP Degree；
-* 改用 Context Parallelism。
+* 将 KV Cache 改为 Context Parallel 分片。
 
-因此，在 GQA/MQA 模型中，TP Degree 通常不能只根据 Query Head 数决定。
+因此，GQA 和 MQA 中的 TP Degree 不能只看 Query Head 数。
+
+---
+
+## 5.13 Vocab Parallelism
+
+Embedding 和 LM Head 的 Vocabulary Dimension 通常很大，也可以沿词表切分。
+
+假设词表大小为 $V$，Embedding Dimension 为 $H$：
+
+$$W_E\in\mathbb{R}^{V\times H}$$
+
+使用 $p$ 个 Rank 时，每个 Rank 保存：
+
+$$W_{E,r}\in\mathbb{R}^{V/p\times H}$$
+
+### 输入 Embedding
+
+每个 Rank 只处理落在自己词表区间内的 token id，其他 token 的本地结果置零。
+
+然后通过 AllReduce 得到完整 Embedding。
+
+### 输出 LM Head
+
+Logits 为：
+
+$$Z=XW_{\text{LM}}^\mathsf{T}$$
+
+沿 Vocabulary Dimension 切分后，每个 Rank 得到：
+
+$$Z_r\in\mathbb{R}^{M\times V/p}$$
+
+如果只需要采样，不一定要 AllGather 完整 $V$ 维 Logits。
+
+系统可以：
+
+* 各 Rank 计算本地 Top-$k$；
+* 收集各 Rank 的候选；
+* 再执行全局 Top-$k$ 或 Sampling。
+
+这样可以避免传输完整词表 Logits。
+
+---
+
+## 5.14 TP 的硬件拓扑要求
+
+TP 的 Collective 位于每一层的关键路径，因此通常应限制在高速互联域内：
+
+```text
+NVSwitch / NVLink
+        优于
+PCIe
+        优于
+跨节点 InfiniBand / RoCE
+```
+
+常见部署方式是：
+
+```text
+节点内：TP
+节点间：PP 或 DP
+```
+
+例如两台 8 卡服务器部署 16 卡模型：
+
+```text
+Node 0：TP Group 0，负责 Pipeline Stage 0
+Node 1：TP Group 1，负责 Pipeline Stage 1
+```
+
+即：
+
+```text
+TP = 8
+PP = 2
+```
+
+这样高频 AllReduce 留在节点内，跨节点只传递 Pipeline Boundary 激活。
+
+---
+
+## 5.15 TP 的性能判断
+
+TP 是否有效，取决于：
+
+$$T_{\text{single GPU compute}}-T_{\text{TP compute}}>T_{\text{communication}}+T_{\text{synchronization}}$$
+
+观察 Nsight Systems（NVIDIA Nsight Systems，英伟达系统级性能分析器）时间线时，如果发现：
+
+```text
+GEMM 很短
+NCCL Collective 很长
+GPU 经常等待同步
+```
+
+通常意味着：
+
+* TP Degree 过大；
+* Decode Batch 太小；
+* TP 跨越了低速链路；
+* Collective 无法与计算重叠。
+
+此时应考虑：
+
+* 降低 TP Degree；
+* 增大 Decode Batch；
+* 使用 DP 扩展吞吐；
+* 把 TP Group 限制在 NVLink 域内；
+* 使用 SP 将 AllReduce 改写为 ReduceScatter 与 AllGather，并缩短激活复制时间。
 
 ---
 
@@ -1827,11 +2472,7 @@ Stage 之间只需要传输边界激活，不需要像 TP 那样在每一层执�
 
 如果模型总权重为 $M$，使用 $p$ 个均匀 Stage 后，每个 Stage 的权重约为：
 
-$$
-M_{\text{weight, per stage}}
-\approx
-\frac{M}{p}
-$$
+$$M_{\text{weight, per stage}}\approx\frac{M}{p}$$
 
 但是，Stage 之间传递的隐藏状态通常仍然具有完整 hidden size：
 
@@ -1913,55 +2554,381 @@ Stage 3：      A B C D
 
 # 7. Sequence Parallelism
 
-Sequence Parallelism，简称 SP，在不同系统中可能指不同技术，需要区分。
+## 7.1 术语范围
+
+SP（Sequence Parallelism，序列并行）在不同论文和系统中可能指不同技术。
+
+本节所说的 SP 特指 Megatron 风格 Sequence Parallelism：
+
+> 在 TP Group 内，把 LayerNorm、Residual 和逐元素算子之间的激活沿 token 或 sequence 维度切分。
+
+它不同于：
+
+* UP（Ulysses Parallelism，尤利西斯并行）：通过 AllToAll 在序列分片和 Head 分片之间转换；
+* CP（Context Parallelism，上下文并行）：对 Attention 上下文和 KV Cache 进行分布式切分；
+* Ring Attention：让 KV Block 在设备间环形移动。
+
+Megatron SP 本身通常不能独立存在，而是与 TP 配套使用。
 
 ---
 
-## 7.1 Megatron Sequence Parallelism
+## 7.2 为什么普通 TP 仍然存在激活复制
 
-经典 Megatron TP 主要切分线性层，但 LayerNorm、Residual 和逐元素算子可能仍然在每张 GPU 上保存完整的序列激活：
+考虑普通 TP 中 Row Parallel Linear 的输出。
 
-$$
-X\in\mathbb{R}^{B\times S\times H}
-$$
+每个 Rank 计算局部贡献：
 
-Sequence Parallelism 沿序列维度切分这些激活：
+$$Y^{(r)}=X_rW_r$$
 
-$$
-X_i\in\mathbb{R}^{B\times S/p\times H}
-$$
+然后执行 AllReduce：
 
-典型过程是：
+$$Y=\sum_{r=0}^{p-1}Y^{(r)}$$
+
+AllReduce 后，每个 Rank 都拥有完整 $Y$：
 
 ```text
-Row Parallel Linear
-        │
-ReduceScatter
-        │
-每张 GPU 得到部分序列
-        │
-LayerNorm / Dropout / Residual
-        │
-AllGather
-        │
-进入下一次 Column Parallel Linear
+Rank 0：完整 Y
+Rank 1：完整 Y
+...
+Rank p-1：完整 Y
 ```
 
-它将某些 AllReduce 拆成 ReduceScatter 和 AllGather，并让中间激活保持序列分片。
+接下来执行的操作可能包括：
+
+* Residual Add；
+* LayerNorm；
+* RMSNorm；
+* Dropout；
+* 激活缩放；
+* 其他逐元素算子。
+
+这些操作并不需要所有 Rank 都保存完整 token 集合，因为不同 token 之间通常彼此独立。
+
+但在普通 TP 中，每个 Rank 都会重复保存和计算完整激活，造成：
+
+* 激活显存重复；
+* LayerNorm 等操作重复计算；
+* AllReduce 后完整结果复制到所有 Rank。
+
+训练阶段需要保存大量前向激活，因此这种重复尤其昂贵。
 
 ---
 
-## 7.2 SP 的主要目的
+## 7.3 SP 的核心思想
 
-Megatron SP 的主要目标包括：
+SP 将激活沿 token 维度切分。
 
-* 减少重复保存的激活；
-* 降低 LayerNorm、Dropout、Residual 等算子的激活显存；
-* 避免每个 TP Rank 都执行完全相同的逐元素计算。
+令：
 
-训练中需要保存大量前向激活，因此 SP 的收益非常明显。
+$$T=B\times S$$
 
-推理中没有反向传播，中间激活生命周期较短，因此经典 Megatron SP 的重要性通常低于训练，但在大 Batch、长 Prefill 或显存紧张场景下仍然有价值。
+完整激活为：
+
+$$X\in\mathbb{R}^{T\times H}$$
+
+在 $p$ 个 Rank 上沿 token 维度切分：
+
+$$X=[X_0;X_1;\ldots;X_{p-1}]$$
+
+其中：
+
+$$X_r\in\mathbb{R}^{T/p\times H}$$
+
+执行 SP 后：
+
+```text
+Rank 0：前 1/p token
+Rank 1：第 2/p token
+...
+Rank p-1：最后 1/p token
+```
+
+每个 Rank 对自己的 token 子集执行：
+
+* LayerNorm；
+* Residual；
+* Dropout；
+* 逐元素运算。
+
+因为这些算子对每个 token 独立，所以不需要跨 Rank 通信。
+
+---
+
+## 7.4 SP 如何与 TP 连接
+
+SP 的关键不是单纯把序列切开，而是在两个张量布局之间切换：
+
+### Sequence-Parallel Layout
+
+每个 Rank 持有：
+
+$$X_r\in\mathbb{R}^{T/p\times H}$$
+
+即：
+
+```text
+部分 token
+完整 hidden dimension
+```
+
+### Tensor-Parallel Linear 所需布局
+
+Column Parallel Linear 通常要求每个 TP Rank 获得全部 token：
+
+$$X\in\mathbb{R}^{T\times H}$$
+
+每个 Rank 使用不同的权重分片，对全部 token 计算不同输出特征。
+
+因此，在进入 Column Parallel Linear 前，需要把序列分片恢复为完整 token 集合。
+
+这通过 AllGather 完成。
+
+---
+
+## 7.5 SP 中的 AllGather
+
+初始时每个 Rank 持有：
+
+$$X_r\in\mathbb{R}^{T/p\times H}$$
+
+完整激活大小为：
+
+$$N_X=THb$$
+
+每 Rank 本地分片大小为：
+
+$$\frac{N_X}{p}$$
+
+执行 AllGather 后，每个 Rank 得到：
+
+$$X\in\mathbb{R}^{T\times H}$$
+
+Ring AllGather 每 Rank 发送量为：
+
+$$V_{\text{AG}}=\frac{p-1}{p}N_X$$
+
+之后，各 Rank 可以执行 Column Parallel Linear：
+
+$$Z_r=XW_r$$
+
+得到 hidden 或 intermediate dimension 上的分片。
+
+---
+
+## 7.6 SP 中的 ReduceScatter
+
+经过一组 Column–Row Parallel 运算后，每个 Rank 得到完整输出形状的局部贡献：
+
+$$Y^{(r)}\in\mathbb{R}^{T\times H}$$
+
+普通 TP 会执行 AllReduce，让每个 Rank 都获得完整 $Y$。
+
+SP 则执行 ReduceScatter。
+
+先归约：
+
+$$Y=\sum_{r=0}^{p-1}Y^{(r)}$$
+
+再沿 token 维度切分：
+
+$$Y=[Y_0;Y_1;\ldots;Y_{p-1}]$$
+
+每个 Rank 最终得到：
+
+$$Y_r\in\mathbb{R}^{T/p\times H}$$
+
+这样输出立即回到 Sequence-Parallel Layout。
+
+Ring ReduceScatter 的每 Rank 发送量为：
+
+$$V_{\text{RS}}=\frac{p-1}{p}N_Y$$
+
+其中：
+
+$$N_Y=THb$$
+
+---
+
+## 7.7 一组 SP + TP 的完整过程
+
+以 Attention 子层为例：
+
+```text
+Sequence-Parallel 输入
+每 Rank：[T/p, H]
+        │
+        ▼
+AllGather
+        │
+每 Rank：[T, H]
+        │
+        ▼
+QKV Column Parallel
+        │
+每 Rank：全部 token，部分 Heads
+        │
+        ▼
+Local Attention
+        │
+        ▼
+Output Row Parallel
+        │
+每 Rank：[T, H] 的局部贡献
+        │
+        ▼
+ReduceScatter
+        │
+每 Rank：[T/p, H]
+        │
+        ▼
+本地 Residual / LayerNorm
+```
+
+MLP 子层类似：
+
+```text
+Sequence-Parallel 输入
+        │
+        ▼
+AllGather
+        │
+        ▼
+Gate/Up Column Parallel
+        │
+        ▼
+本地 Activation
+        │
+        ▼
+Down Row Parallel
+        │
+        ▼
+ReduceScatter
+        │
+        ▼
+Sequence-Parallel 输出
+```
+
+---
+
+## 7.8 为什么 SP 不会增加理论总通信量
+
+普通 TP 中，一组 Row Parallel 输出执行一次 AllReduce：
+
+$$V_{\text{AllReduce}}=2\frac{p-1}{p}N$$
+
+SP 将其拆成：
+
+* 进入下一组 Column Parallel 前的 AllGather；
+* 当前 Row Parallel 后的 ReduceScatter。
+
+二者通信量分别为：
+
+$$V_{\text{AllGather}}=\frac{p-1}{p}N$$
+
+$$V_{\text{ReduceScatter}}=\frac{p-1}{p}N$$
+
+合计：
+
+$$V_{\text{SP pair}}=2\frac{p-1}{p}N$$
+
+因此：
+
+$$V_{\text{SP pair}}=V_{\text{AllReduce}}$$
+
+从 Ring 算法的理想字节数看，SP 没有增加通信量。
+
+它只是把一次 AllReduce 拆成：
+
+$$\text{AllReduce}=\text{ReduceScatter}+\text{AllGather}$$
+
+并让两个阶段分别位于不同算子边界。
+
+---
+
+## 7.9 SP 的真正收益
+
+SP 的主要收益不是减少理论通信字节数，而是减少激活复制。
+
+普通 TP 中，每 Rank 在 LayerNorm 等位置持有：
+
+$$T\times H$$
+
+大小的完整激活。
+
+SP 中，每 Rank 只持有：
+
+$$\frac{T}{p}\times H$$
+
+大小的序列分片。
+
+理想情况下，这部分激活显存降低为原来的：
+
+$$\frac{1}{p}$$
+
+此外：
+
+* LayerNorm 只处理本地 token；
+* Residual Add 只处理本地 token；
+* Dropout 只处理本地 token；
+* 不再在每个 Rank 上重复执行完整 token 集合的逐元素操作。
+
+---
+
+## 7.10 SP 为什么在训练中更重要
+
+训练阶段需要为反向传播保存：
+
+* LayerNorm 输入；
+* Attention 输入和输出；
+* MLP 激活；
+* Dropout Mask；
+* Residual 中间结果。
+
+这些激活的生命周期跨越整个前向和反向过程。
+
+因此，SP 能显著降低训练显存。
+
+推理阶段没有反向传播，中间激活通常在一层执行完成后很快释放，所以 SP 的显存收益相对较小。
+
+但 SP 在以下推理场景中仍可能有价值：
+
+* 长 Prompt Prefill；
+* 大 Batch Prefill；
+* 大规模 DiT；
+* 激活或 Workspace 占用较高；
+* 需要与 TP 通信融合；
+* 希望避免 TP Rank 上的逐元素重复计算。
+
+---
+
+## 7.11 SP 与 CP 的区别
+
+SP 主要处理的是：
+
+```text
+LayerNorm
+Residual
+Dropout
+逐元素激活
+TP 线性层之间的张量布局
+```
+
+CP 主要处理的是：
+
+```text
+Attention 的长上下文
+Q、K、V 的分布
+KV Cache 分片
+分布式 Softmax
+```
+
+SP 中，进入 Attention 计算前通常仍会通过 AllGather 获得完整 token 集合。
+
+CP 则试图让 Attention 本身在上下文分片状态下完成，不要求每张 GPU 都拥有完整上下文。
+
+因此：
+
+> SP 是 TP 周围的激活分片；CP 是 Attention 内部的上下文分片。
 
 ---
 
@@ -2023,69 +2990,464 @@ Context Parallelism 则直接处理：
 
 ---
 
-# 9. Ulysses Sequence Parallelism
+# 9. Ulysses Parallelism
 
-## 9.1 布局转换
+## 9.1 UP 的目标
 
-Ulysses 初始按序列切分：
+UP（Ulysses Parallelism，尤利西斯并行）是一种面向 Attention 的序列并行方法。
 
-```text
-GPU 0：部分 token，全部 Heads
-GPU 1：部分 token，全部 Heads
-GPU 2：部分 token，全部 Heads
-GPU 3：部分 token，全部 Heads
-```
+它要解决的问题是：
 
-通过 AllToAll，将布局转换为按 Head 切分：
+> 序列已经沿 GPU 切分，但标准 Attention Kernel 通常希望获得完整序列上的 Q、K、V。如何在不让每张 GPU 保存全部 Head 的情况下，继续使用高效的本地 Attention Kernel？
 
-```text
-GPU 0：全部 token，部分 Heads
-GPU 1：全部 token，部分 Heads
-GPU 2：全部 token，部分 Heads
-GPU 3：全部 token，部分 Heads
-```
+UP 的核心方法不是让 KV Block 环形移动，而是通过 AllToAll 在两种布局之间转换：
 
-此时每张 GPU 都拥有完整序列，但只负责部分 Attention Heads，可以独立执行本地 Attention。
+1. Sequence-Sharded Layout：部分序列、全部 Head；
+2. Head-Sharded Layout：完整序列、部分 Head。
 
-计算完成后，再执行一次反向 AllToAll，恢复序列分片布局。
+转换后，每个 Rank 可以对自己负责的 Head，在完整序列上独立执行 Attention。
 
 ---
 
-## 9.2 Ulysses 的通信过程
+## 9.2 UP 与普通 SP 的区别
 
-假设输入 Q、K、V 为：
+普通 Megatron SP 主要用于：
 
-$$
-Q,K,V\in\mathbb{R}^{B\times S/p\times N_h\times D_h}
-$$
+* LayerNorm；
+* Residual；
+* TP 线性层边界；
+* 激活显存分片。
 
-经过 AllToAll 后，每张 GPU 获得：
+UP 直接进入 Attention 内部，重排 Q、K、V：
 
-$$
-Q_i,K_i,V_i
-\in
-\mathbb{R}^{B\times S\times N_h/p\times D_h}
-$$
+```text
+Megatron SP：
+序列分片
+→ AllGather 完整序列
+→ TP Attention
 
-之后每张 GPU 对自己的 Head 子集计算完整序列 Attention。
+Ulysses：
+序列分片、全部 Heads
+→ AllToAll
+→ 完整序列、部分 Heads
+→ 本地 Attention
+```
+
+因此，UP 是一种分布式 Attention 方法，而不仅是逐元素激活分片。
 
 ---
 
-## 9.3 Ulysses 的特点
+## 9.3 初始张量布局
 
-优点：
+设：
 
-* 可以复用成熟的单卡 FlashAttention Kernel；
-* 每张 GPU 负责完整序列上的部分 Head；
-* 通信集中在两次 AllToAll；
-* 比较容易实现 Attention 计算与通信的结构化组合。
+* Batch Size 为 $B$；
+* 序列长度为 $S$；
+* Attention Head 数为 $N_h$；
+* 每个 Head 维度为 $D_h$；
+* UP Degree 为 $p$。
 
-局限：
+假设序列均匀切分。
 
-* 并行度通常受到 Attention Head 数量限制；
-* Head 数必须能够被 Ulysses Degree 合理切分；
-* AllToAll 对互联带宽和拓扑要求较高；
-* Decode 时序列 Query 长度为 1，利用方式与 Prefill 不同。
+每个 Rank 初始持有：
+
+$$Q_r,K_r,V_r\in\mathbb{R}^{B\times S/p\times N_h\times D_h}$$
+
+也就是：
+
+```text
+部分序列
+全部 Attention Heads
+```
+
+例如：
+
+```text
+S   = 4096
+N_h = 32
+UP  = 4
+
+Rank 0：token 0～1023，Heads 0～31
+Rank 1：token 1024～2047，Heads 0～31
+Rank 2：token 2048～3071，Heads 0～31
+Rank 3：token 3072～4095，Heads 0～31
+```
+
+---
+
+## 9.4 为什么这种布局不能直接独立算完整 Attention
+
+Rank 0 虽然拥有全部 Heads，但只拥有前 $1/4$ 的 K 和 V。
+
+对于 Rank 0 的 Query，完整 Attention 应该访问整个上下文：
+
+$$K=[K_0;K_1;\ldots;K_{p-1}]$$
+
+$$V=[V_0;V_1;\ldots;V_{p-1}]$$
+
+如果 Rank 0 只使用本地 $K_0,V_0$，它只能看到局部上下文，结果不等价于完整 Attention。
+
+因此必须进行跨 Rank 数据交换。
+
+---
+
+## 9.5 Ulysses 的 AllToAll 布局转换
+
+UP 将每个 Rank 的 Head 维度切成 $p$ 组：
+
+$$N_h=\frac{N_h}{p}\times p$$
+
+每个源 Rank 将不同 Head Group 发送给不同目标 Rank。
+
+例如：
+
+```text
+Rank 0 原有：
+token 0～1023，Heads 0～31
+
+切成：
+Heads 0～7   → Rank 0
+Heads 8～15  → Rank 1
+Heads 16～23 → Rank 2
+Heads 24～31 → Rank 3
+```
+
+其他 Rank 也执行相同操作。
+
+AllToAll 后，Rank 0 收到所有序列分片上的 Heads 0～7：
+
+```text
+Rank 0：
+token 0～4095，Heads 0～7
+
+Rank 1：
+token 0～4095，Heads 8～15
+
+Rank 2：
+token 0～4095，Heads 16～23
+
+Rank 3：
+token 0～4095，Heads 24～31
+```
+
+张量形状变为：
+
+$$Q'_r,K'_r,V'_r\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
+
+也就是：
+
+```text
+完整序列
+部分 Attention Heads
+```
+
+---
+
+## 9.6 为什么 AllToAll 能实现这个转换
+
+AllToAll 的语义是：
+
+> 每个 Rank 为不同目标 Rank 准备不同数据，通信后每个目标 Rank 收集来自所有源 Rank 的对应数据。
+
+源 Rank 按 Head Group 切分本地序列块：
+
+$$Q_r=[Q_{r\rightarrow0},Q_{r\rightarrow1},\ldots,Q_{r\rightarrow p-1}]$$
+
+其中：
+
+$$Q_{r\rightarrow j}\in\mathbb{R}^{B\times S/p\times N_h/p\times D_h}$$
+
+目标 Rank $j$ 收到：
+
+$$Q'_j=[Q_{0\rightarrow j};Q_{1\rightarrow j};\ldots;Q_{p-1\rightarrow j}]$$
+
+沿序列维度拼接后：
+
+$$Q'_j\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
+
+K 和 V 同理。
+
+因此，一次 AllToAll 同时完成：
+
+* 序列维度的 Gather；
+* Head 维度的 Scatter。
+
+它不是简单复制完整张量，而是做张量布局转置。
+
+---
+
+## 9.7 本地 Attention
+
+布局转换后，每个 Rank 拥有：
+
+* 完整序列；
+* 部分 Heads。
+
+不同 Attention Heads 相互独立，因此每个 Rank 可以本地执行：
+
+$$O'_r=\operatorname{Attention}(Q'_r,K'_r,V'_r)$$
+
+输出形状为：
+
+$$O'_r\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
+
+这一步可以使用成熟的单卡 FlashAttention（闪存注意力）Kernel，因为对于本地 Head 子集而言，序列是完整的。
+
+---
+
+## 9.8 反向 AllToAll
+
+Attention 输出后，通常需要恢复 Sequence-Sharded Layout。
+
+当前布局为：
+
+```text
+完整序列
+部分 Heads
+```
+
+通过第二次 AllToAll，转换回：
+
+```text
+部分序列
+全部 Heads
+```
+
+最终每个 Rank 得到：
+
+$$O_r\in\mathbb{R}^{B\times S/p\times N_h\times D_h}$$
+
+例如：
+
+```text
+Rank 0：token 0～1023，Heads 0～31
+Rank 1：token 1024～2047，Heads 0～31
+...
+```
+
+因此 UP 的 Attention 主流程为：
+
+```text
+部分序列，全部 Heads
+        │
+        ▼
+QKV AllToAll
+        │
+        ▼
+完整序列，部分 Heads
+        │
+        ▼
+Local Attention
+        │
+        ▼
+Output AllToAll
+        │
+        ▼
+部分序列，全部 Heads
+```
+
+---
+
+## 9.9 UP 的通信量
+
+设每个 Rank 在第一次 AllToAll 前持有的本地 QKV Buffer 大小为：
+
+$$N_{\text{QKV,local}}$$
+
+均匀 AllToAll 中，发给自己的 $1/p$ 数据不经过网络，因此第一次 AllToAll 每 Rank 发送量为：
+
+$$V_{\text{QKV A2A}}=\frac{p-1}{p}N_{\text{QKV,local}}$$
+
+Attention 输出本地 Buffer 大小为：
+
+$$N_{\text{O,local}}$$
+
+第二次 AllToAll 每 Rank 发送量为：
+
+$$V_{\text{O A2A}}=\frac{p-1}{p}N_{\text{O,local}}$$
+
+因此总发送量为：
+
+$$V_{\text{UP}}=\frac{p-1}{p}\left(N_{\text{QKV,local}}+N_{\text{O,local}}\right)$$
+
+对于标准 MHA，如果 Q、K、V 和 O 的元素数量大致相同，则：
+
+$$N_{\text{QKV,local}}\approx3N_{\text{O,local}}$$
+
+于是：
+
+$$V_{\text{UP}}\approx4\frac{p-1}{p}N_{\text{O,local}}$$
+
+实际系统通常会把 Q、K、V 合并到同一个 Buffer 中执行一次 AllToAll，而不是分别发起三次 Collective，从而减少通信启动次数。
+
+---
+
+## 9.10 UP 的通信成本不仅由字节数决定
+
+AllToAll 的理论发送量看起来与 AllGather 相似，但实际性能往往更敏感。
+
+原因是 AllToAll 需要：
+
+* 每个 Rank 向多个目标 Rank 发送不同数据；
+* 对数据进行 Split、Pack 和 Reorder；
+* 处理多对多链路争用；
+* 等待最慢 Rank 完成。
+
+时间可以粗略表示为：
+
+$$T_{\text{UP}}\approx T_{\text{pack}}+T_{\text{all-to-all}}+T_{\text{attention}}+T_{\text{all-to-all}}+T_{\text{unpack}}$$
+
+其中 Pack 和 Unpack 属于本地显存操作，不计入网络通信量，但仍会消耗 HBM（High Bandwidth Memory，高带宽显存）带宽和 Kernel 时间。
+
+---
+
+## 9.11 UP 的 Head 数限制
+
+UP 把 Head 维度切成 $p$ 份，因此通常要求：
+
+$$N_h\bmod p=0$$
+
+同时需要：
+
+$$p\leq N_h$$
+
+否则某些 Rank 无法分配到完整 Head Group。
+
+例如：
+
+```text
+N_h = 32
+UP  = 8
+```
+
+每 Rank 分配 4 个 Heads，比较自然。
+
+但如果：
+
+```text
+N_h = 8
+UP  = 16
+```
+
+Head 数不足以支持 16 路标准 Ulysses 切分。
+
+这时通常需要：
+
+* 降低 UP Degree；
+* 与 Ring Attention 组合；
+* 采用更复杂的 Head/Sequence 二维切分；
+* 对 Head 做复制或特殊映射。
+
+---
+
+## 9.12 UP 与 GQA、MQA
+
+对于 GQA：
+
+$$N_q>N_{kv}$$
+
+Q 可以按较大的 Query Head 数切分，但 K、V 的 Head 数可能不足。
+
+例如：
+
+```text
+Query Heads = 64
+KV Heads    = 8
+UP          = 16
+```
+
+Q 可以分成 16 组，但 KV Head 无法自然分成 16 组。
+
+可能的处理方式包括：
+
+* 复制 KV Heads；
+* 对 Q 和 KV 使用不同 AllToAll 布局；
+* 让多个 Query Head Group 共享同一个 KV Head Group；
+* 限制 UP Degree 不超过 $N_{kv}$；
+* 使用 Ring Attention 处理 KV 上下文。
+
+因此，标准 UP 在 MHA 上最自然，在 GQA/MQA 上需要额外设计。
+
+---
+
+## 9.13 UP 为什么更适合 Prefill
+
+Prefill 时：
+
+$$S\gg1$$
+
+序列维度足够大，切分后每个 Rank 仍有较多 token，Attention 计算量也足以覆盖 AllToAll。
+
+Decode 时，每个请求的新 Query 长度通常为：
+
+$$S_q=1$$
+
+此时 Query 序列几乎无法继续切分。
+
+即使历史 KV Cache 很长，标准 Ulysses 的“序列分片到 Head 分片”转换也不再自然，因为本轮只有少量 Query token。
+
+所以 UP 主要适用于：
+
+* 长上下文 Prefill；
+* 训练；
+* DiT（Diffusion Transformer，扩散 Transformer）；
+* 图像和视频 token；
+* 具有较大 Query Sequence 的 Attention。
+
+对于 Decode 长 KV Cache，通常更适合使用 KV Context Sharding 或 Ring-Based Context Parallelism。
+
+---
+
+## 9.14 UP 与 Ring Attention 的比较
+
+UP 的核心是：
+
+```text
+序列分片
+→ AllToAll
+→ Head 分片
+→ 本地完整 Attention
+```
+
+Ring Attention 的核心是：
+
+```text
+Query 留在本地
+KV Block 在 Rank 间循环
+→ 逐块 Online Softmax
+```
+
+UP 的优点：
+
+* 可以直接使用成熟的本地 FlashAttention；
+* 通信步骤相对集中；
+* 计算逻辑简单；
+* 适合 Head 数较多的模型。
+
+UP 的局限：
+
+* UP Degree 受 Head 数约束；
+* AllToAll 对网络拓扑敏感；
+* GQA/MQA 处理复杂；
+* Decode 场景不自然。
+
+Ring Attention 的优点：
+
+* 并行度不严格受 Head 数限制；
+* KV 通信可以与 Attention 计算流水化；
+* 更适合超长上下文。
+
+Ring Attention 的局限：
+
+* 需要多个 Ring Step；
+* Online Softmax 和因果 Mask 处理更复杂；
+* 点对点通信调度复杂。
+
+实际系统可以组合二者：
+
+$$P_{\text{context}}=P_{\text{Ulysses}}\times P_{\text{Ring}}$$
+
+在节点内使用 Ulysses AllToAll，在节点间使用 Ring，可以更好地匹配分层硬件拓扑。
 
 ---
 
@@ -2136,23 +3498,13 @@ $$
 归一化因子更新为：
 
 $$
-l
-=
-
-e^{m_{\text{old}}-m}l_{\text{old}}
-+
-e^{m_{\text{new}}-m}l_{\text{new}}
+l=e^{m_{\text{old}}-m}l_{\text{old}}+e^{m_{\text{new}}-m}l_{\text{new}}
 $$
 
 输出累积值更新为：
 
 $$
-O
-=
-
-e^{m_{\text{old}}-m}O_{\text{old}}
-+
-e^{m_{\text{new}}-m}O_{\text{new}}
+O=e^{m_{\text{old}}-m}O_{\text{old}}+e^{m_{\text{new}}-m}O_{\text{new}}
 $$
 
 最后输出为：
@@ -2198,14 +3550,7 @@ Ulysses 的通信相对集中，Ring Attention 的通信被分散到多个迭代
 
 实际系统也可以将二者组合：
 
-$$
-\text{SP Degree}
-================
-
-\text{Ulysses Degree}
-\times
-\text{Ring Degree}
-$$
+$$\text{SP Degree}=\text{Ulysses Degree}\times\text{Ring Degree}$$
 
 ---
 
@@ -2255,167 +3600,968 @@ Decode CP 的本质是：
 
 # 12. Expert Parallelism
 
-## 12.1 MoE 模型
+## 12.1 EP 的背景：为什么 MoE 需要不同的并行方式
 
-Mixture-of-Experts 模型包含多个 Expert，但每个 token 只选择少量 Expert。
+MoE（Mixture of Experts，混合专家模型）层包含多个 Expert，但每个 token 只激活少量 Expert。
 
 设：
 
 * Expert 总数为 $E$；
 * 每个 token 选择 Top-$k$ Experts；
-* GPU 数量为 $p$。
+* Hidden Size 为 $H$；
+* EP Group 中有 $p$ 个 Rank。
 
-Expert Parallelism，简称 EP，将不同 Expert 放在不同 GPU 上。
+如果每个 Rank 保存全部 $E$ 个 Experts，会造成巨大的权重复制。
 
-例如：
+EP（Expert Parallelism，专家并行）将不同 Expert 放在不同 Rank：
 
 ```text
-GPU 0：Expert 0～7
-GPU 1：Expert 8～15
-GPU 2：Expert 16～23
-GPU 3：Expert 24～31
+Rank 0：Expert 0～3
+Rank 1：Expert 4～7
+Rank 2：Expert 8～11
+Rank 3：Expert 12～15
 ```
+
+理想情况下，每个 Rank 保存：
+
+$$\frac{E}{p}$$
+
+个 Experts。
+
+但 token 初始位于处理该请求的 Rank，不一定位于目标 Expert 所在 Rank。
+
+因此 EP 的核心问题是：
+
+> 根据 Router 结果，把 token 动态发送到对应 Expert 所在的 GPU。
 
 ---
 
-## 12.2 EP 的执行流程
+## 12.2 MoE Layer 的整体流程
 
-MoE Layer 的典型执行流程如下：
+一个完整 MoE Layer 通常包括：
 
 ```text
 输入 Hidden States
         │
         ▼
-      Router
+Router / Gating
         │
 为每个 token 选择 Top-k Experts
         │
         ▼
 Token Permute / Pack
         │
-        ▼
-      AllToAll
+按目标 Rank 和 Expert 分组
         │
         ▼
-每张 GPU 获得属于本地 Expert 的 token
+AllToAll / AllToAllV Dispatch
         │
         ▼
-Grouped GEMM / Expert FFN
+本地 Expert Permute
         │
         ▼
-      AllToAll
+Grouped GEMM
         │
         ▼
-Token Unpermute / Combine
+AllToAll / AllToAllV Combine
         │
         ▼
-      输出结果
+Token Unpermute
+        │
+        ▼
+按 Router Weight 加权合并
+        │
+        ▼
+输出
 ```
 
-第一次 AllToAll 被称为 Dispatch，第二次通常被称为 Combine。
+EP 并不只是两次 AllToAll。
+
+在通信前后，还需要进行大量本地数据重排和元数据处理。
 
 ---
 
-## 12.3 EP 与 TP 的区别
+## 12.3 Router
 
-对于 TP，一个 Expert 本身被切到多张 GPU：
+设输入 token 数为 $T$：
+
+$$X\in\mathbb{R}^{T\times H}$$
+
+Router 权重为：
+
+$$W_R\in\mathbb{R}^{H\times E}$$
+
+Router Logits 为：
+
+$$G=XW_R\in\mathbb{R}^{T\times E}$$
+
+对每个 token 选择 Top-$k$ Experts：
+
+$$\mathcal{E}(t)=\operatorname{TopK}(G_t,k)$$
+
+并得到对应路由权重：
+
+$$w_{t,e}$$
+
+如果 $k=2$，每个 token 会生成两个 Routed Token Instances。
+
+总 Routed Token 数近似为：
+
+$$T_{\text{routed}}=kT$$
+
+如果存在 Capacity Limit、Token Drop 或共享 Expert，实际数量可能不同。
+
+---
+
+## 12.4 为什么需要 Token Permute
+
+输入 token 通常按照原始请求顺序排列：
+
+```text
+token 0
+token 1
+token 2
+token 3
+...
+```
+
+Router 选择结果可能是：
+
+```text
+token 0 → Expert 7
+token 1 → Expert 2
+token 2 → Expert 7
+token 3 → Expert 12
+```
+
+这些目标 Expert 分散在不同 Rank 上。
+
+通信库通常希望发送给同一个目标 Rank 的数据位于连续 Buffer 中，例如：
+
+```text
+发给 Rank 0 的 token
+发给 Rank 1 的 token
+发给 Rank 2 的 token
+发给 Rank 3 的 token
+```
+
+因此需要先执行 Permute 或 Pack：
+
+```text
+原始 Token 顺序
+        │
+        ▼
+按目标 Rank 排序
+        │
+        ▼
+同一 Rank 内按 Expert 排序
+```
+
+同时记录反向索引，以便计算完成后恢复原 token 顺序。
+
+Permute 不产生网络通信，但会消耗：
+
+* HBM 读写带宽；
+* Prefix Sum 或 Histogram；
+* Scatter/Gather Kernel；
+* 临时 Buffer；
+* Kernel Launch。
+
+因此 MoE 中“省掉一次 Permute”可能是非常重要的优化。
+
+---
+
+## 12.5 Dispatch AllToAll
+
+每个源 Rank 把 Routed Token 发送到目标 Expert 所在 Rank。
+
+假设 Rank $r$ 要发送给 Rank $j$ 的 token Buffer 为：
+
+$$X_{r\rightarrow j}$$
+
+执行 Dispatch AllToAll 后，Rank $j$ 得到：
+
+$$X'_j=[X_{0\rightarrow j},X_{1\rightarrow j},\ldots,X_{p-1\rightarrow j}]$$
+
+这些 token 都将由 Rank $j$ 上的本地 Experts 处理。
+
+---
+
+## 12.6 为什么 MoE 通常需要 AllToAllV
+
+普通 AllToAll 假设每个 Rank 发给每个目标 Rank 的数据大小相同。
+
+但 Router 通常产生不均匀分布。
+
+例如：
+
+```text
+Rank 0 发给 Rank 1：64 个 token
+Rank 0 发给 Rank 2：7 个 token
+Rank 0 发给 Rank 3：103 个 token
+```
+
+因此实际 MoE 更接近 AllToAllV，即 Variable-Sized AllToAll：
+
+* 不同 Rank 之间的消息大小不同；
+* 每个 Rank 需要交换 Send Counts；
+* 接收方根据 Counts 分配或定位 Buffer；
+* 通信时间取决于最繁忙 Rank 和拥塞链路。
+
+---
+
+## 12.7 EP Dispatch 通信量
+
+设每个 Rank 原始拥有 $T_{\text{local}}$ 个 token。
+
+每个 token 选择 Top-$k$ Experts，因此本 Rank 产生：
+
+$$kT_{\text{local}}$$
+
+个 Routed Token Instances。
+
+每个 Hidden State 大小为：
+
+$$Hb$$
+
+如果 Expert 在各 Rank 间均匀分布，且路由近似均匀，则一个 Routed Token 的目标 Expert 位于本 Rank 的概率约为：
+
+$$\frac{1}{p}$$
+
+需要发送到远程 Rank 的概率约为：
+
+$$\frac{p-1}{p}$$
+
+因此 Dispatch 阶段每 Rank 的理想发送量近似为：
+
+$$V_{\text{dispatch}}\approx\frac{p-1}{p}kT_{\text{local}}Hb$$
+
+Combine 阶段需要把 Expert 输出发送回原 token 所属 Rank，通信量通常相近：
+
+$$V_{\text{combine}}\approx\frac{p-1}{p}kT_{\text{local}}Hb$$
+
+因此两次 AllToAll 的理想总发送量为：
+
+$$V_{\text{EP}}\approx2\frac{p-1}{p}kT_{\text{local}}Hb$$
+
+这还没有计算：
+
+* Expert Id；
+* Router Weight；
+* Source Rank；
+* Token Index；
+* Offset；
+* Send Count 和 Receive Count。
+
+元数据相对 Hidden State 通常较小，但在 Decode 小 Batch 下可能不可忽略。
+
+---
+
+## 12.8 非均匀路由下的通信量
+
+对于 Rank $r$，实际发送量应写为：
+
+$$V_r^{\text{dispatch}}=\sum_{\substack{j=0 \\ j\neq r}}^{p-1}|X_{r\rightarrow j}|$$
+
+如果每个 token Hidden State 为 $Hb$ 字节，Rank $r$ 发送到 Rank $j$ 的 Routed Token 数为 $n_{r\rightarrow j}$，则：
+
+$$V_r^{\text{dispatch}}=Hb\sum_{\substack{j=0 \\ j\neq r}}^{p-1}n_{r\rightarrow j}$$
+
+Collective 的完成时间通常由最大通信 Rank 决定：
+
+$$T_{\text{dispatch}}\approx\max_rT_r$$
+
+所以平均发送量较小并不能保证 AllToAll 很快。
+
+真正关键的是：
+
+* 最大 Rank 发送量；
+* 最大 Rank 接收量；
+* 是否有热点链路；
+* 是否跨节点；
+* 是否存在某个 Expert 的严重拥塞。
+
+---
+
+## 12.9 本地 Expert 分组
+
+Dispatch 完成后，一个 Rank 会收到属于多个本地 Experts 的 token。
+
+例如：
+
+```text
+Rank 0 收到：
+Expert 0：128 个 token
+Expert 1：19 个 token
+Expert 2：74 个 token
+Expert 3：5 个 token
+```
+
+为了执行 Expert FFN，需要进一步按本地 Expert 分组。
+
+如果 Dispatch Buffer 已经同时按目标 Rank 和 Expert 排好序，则接收后可以直接形成 Expert-Contiguous Layout。
+
+否则还需要一次本地 Permute。
+
+这也是为什么高性能 EP 实现会尽量融合：
+
+* Router Output；
+* Destination Rank 计算；
+* Expert Offset；
+* Permute；
+* Dispatch Buffer 写入。
+
+---
+
+## 12.10 Grouped GEMM
+
+每个 Expert 的计算通常是一个 MLP：
+
+$$Y_e=\sigma(X_eW_{\text{up},e})W_{\text{down},e}$$
+
+其中：
+
+$$X_e\in\mathbb{R}^{T_e\times H}$$
+
+$T_e$ 是分配给 Expert $e$ 的 token 数。
+
+不同 Expert 的 $T_e$ 往往不同：
+
+```text
+Expert 0：128 tokens
+Expert 1：19 tokens
+Expert 2：74 tokens
+Expert 3：5 tokens
+```
+
+普通 Batched GEMM（General Matrix Multiplication，通用矩阵乘法）通常要求各矩阵形状相同，不适合这种情况。
+
+Grouped GEMM 允许一次 Kernel Launch 处理多个不同 $M$ 维度的 GEMM：
+
+$$Y_e=X_eW_e,\qquad e=0,1,\ldots,E_{\text{local}}-1$$
+
+Grouped GEMM 的目标是：
+
+* 减少 Kernel Launch 次数；
+* 提高小 GEMM 的调度效率；
+* 共享 Workspace；
+* 在一个 Kernel 中处理多个 Experts；
+* 尽量提高 Tensor Core 利用率。
+
+---
+
+## 12.11 Combine AllToAll
+
+Expert 计算完成后，输出仍位于 Expert 所在 Rank。
+
+但最终输出必须回到原始 token 所属 Rank，并恢复原始 token 顺序。
+
+因此执行第二次 AllToAll：
+
+```text
+Expert Rank
+    │
+    ▼
+Combine AllToAll
+    │
+    ▼
+原始 Token Rank
+```
+
+随后根据保存的反向索引执行 Unpermute。
+
+对于 Top-$k$ Routing，一个 token 可能收到多个 Expert 输出：
+
+$$Y_t=\sum_{e\in\mathcal{E}(t)}w_{t,e}Y_{t,e}$$
+
+最终还需要按照 Router Weight 进行加权合并。
+
+---
+
+## 12.12 EP 的两次通信为什么通常无法省掉
+
+Dispatch 是为了把 token 移动到 Expert 所在 Rank。
+
+Combine 是为了把 Expert 输出送回原请求布局。
+
+除非后续层也继续采用完全相同的 Expert-Owned Token Layout，否则必须恢复原布局。
+
+Transformer 的下一层通常还要执行：
+
+* Attention；
+* Residual；
+* LayerNorm；
+* 其他 MoE Layer。
+
+这些操作通常按照请求或 token 原始布局组织，因此需要 Combine。
+
+某些系统会尝试让多个连续 MoE 算子保持 Expert-Owned Layout，但这会显著增加模型结构和调度复杂度。
+
+---
+
+## 12.13 EP 与 TP 的区别
+
+### TP
+
+TP 把一个 Expert 内部的权重切分：
 
 ```text
 Expert 0：
-GPU 0 保存一部分
-GPU 1 保存一部分
-GPU 2 保存一部分
-GPU 3 保存一部分
+Rank 0 持有一部分权重
+Rank 1 持有一部分权重
+Rank 2 持有一部分权重
+Rank 3 持有一部分权重
 ```
 
-对于 EP，不同 GPU 保存不同 Expert：
+每个被激活的 Expert 需要多个 Rank 共同计算，通常依赖 AllReduce。
+
+### EP
+
+EP 把不同 Experts 放到不同 Rank：
 
 ```text
-GPU 0：Expert 0～3
-GPU 1：Expert 4～7
-GPU 2：Expert 8～11
-GPU 3：Expert 12～15
+Rank 0：Expert 0～3
+Rank 1：Expert 4～7
+Rank 2：Expert 8～11
+Rank 3：Expert 12～15
 ```
 
-TP 的主要通信通常是 AllReduce，而 EP 的主要通信通常是 AllToAll。
+token 被发送到 Expert 所在 Rank，通常依赖 AllToAll。
 
-TP 是对单个 Dense Tensor 做分片；EP 是根据 Router 结果动态迁移 token。
+因此：
+
+```text
+TP：
+切单个矩阵
+通信对象是 Dense Tensor Partial Result
+
+EP：
+切 Expert 集合
+通信对象是动态 Routed Tokens
+```
 
 ---
 
-## 12.4 Grouped GEMM
+## 12.14 Expert Tensor Parallelism
 
-每个 Expert 接收到的 token 数通常不同。
+如果单个 Expert 太大，无法放入一张 GPU，还可以在 Expert 内部继续使用 TP。
 
-假设：
+这种方式称为 ETP（Expert Tensor Parallelism，专家张量并行）。
+
+例如：
 
 ```text
-Expert 0：64 个 token
-Expert 1：18 个 token
-Expert 2：92 个 token
-Expert 3：7 个 token
+EP Group：
+不同 Expert 位于不同 Expert Group
+
+每个 Expert Group 内：
+TP = 2
 ```
 
-不能简单把所有 Expert 当成相同形状的普通 Batched GEMM。
+执行过程变为：
 
-Grouped GEMM 允许一次 Kernel Launch 处理多个不同 $M$ 维度的矩阵乘法：
+```text
+EP Dispatch AllToAll
+        │
+        ▼
+token 到达目标 Expert Group
+        │
+        ▼
+Expert 内部 Tensor Parallel
+        │
+        ▼
+TP Collective
+        │
+        ▼
+EP Combine AllToAll
+```
 
-$$
-X_eW_e,\qquad e=0,1,\ldots,E_{\text{local}}-1
-$$
+此时同时存在：
 
-其中每个 $X_e$ 的 token 数不同。
+* EP AllToAll；
+* Expert 内 TP AllReduce；
+* 本地 Permute；
+* Grouped GEMM 或分片 GEMM。
 
-Grouped GEMM 的目标包括：
+通信复杂度明显提高。
 
-* 减少 kernel launch 数量；
-* 提高小 Expert GEMM 的执行效率；
-* 共享调度和 Workspace；
-* 改善低 token 数 Expert 的利用率。
+所以如果单个 Expert 能够完整放入一张 GPU，通常优先采用纯 EP，避免 Expert 内部 TP。
 
 ---
 
-## 12.5 EP 的负载不均衡
+## 12.15 EP 的负载不均衡
 
-Router 可能把大量 token 发送到少数热点 Expert：
+理想情况下，每个 Expert 接收相同数量 token：
+
+$$T_e\approx\frac{kT}{E}$$
+
+但实际 Router 可能产生严重偏斜：
 
 ```text
-Expert 0：300 个 token
-Expert 1：280 个 token
-Expert 2：15 个 token
-Expert 3：8 个 token
+Expert 0：300 tokens
+Expert 1：280 tokens
+Expert 2：15 tokens
+Expert 3：8 tokens
 ```
 
-一次 MoE Layer 必须等待最慢的 Rank 完成，因此热点 Expert 会产生 Straggler。
+MoE Layer 的完成时间由最慢 Expert 或最慢 Rank 决定：
 
-常见优化包括：
+$$T_{\text{MoE layer}}\approx\max_rT_r$$
 
-* Router Load Balancing Loss；
-* Expert Capacity；
+负载不均衡会同时造成：
+
+* 某些 Rank 的通信量更大；
+* 某些 Rank 的 Grouped GEMM 更慢；
+* 其他 Rank 提前完成后等待；
+* GPU 利用率不均；
+* Tail Latency 增大。
+
+---
+
+## 12.16 Capacity 与 Token Drop
+
+一些 MoE 系统会为每个 Expert 设置容量：
+
+$$C=\left\lceil\text{Capacity Factor}\times\frac{kT}{E}\right\rceil$$
+
+当某个 Expert 接收到的 token 数超过 $C$ 时，可能：
+
+* 丢弃超出容量的 token；
+* 把 token 路由到次选 Expert；
+* 使用 Backup Expert；
+* 动态扩展 Buffer；
+* 接受负载不均衡。
+
+训练中 Token Drop 可以控制内存和计算上界，但推理通常更难接受丢弃 token，因为会影响输出准确性。
+
+所以推理系统更常使用：
+
+* 动态 Buffer；
 * Expert Replication；
-* Redundant Experts；
 * Expert Placement；
-* 动态 Expert 迁移；
-* Expert Parallel Load Balancer；
-* 分层 AllToAll；
-* 通信与 Grouped GEMM 重叠。
+* Load-Aware Routing。
 
 ---
 
-## 12.6 Decode 下 EP 的问题
+## 12.17 Expert Replication
 
-Decode 每个 Step 只有每个请求的一个新 token，因此总 token 数约为 Batch Size $B$。
+如果某个 Expert 很热门，可以在多个 Rank 上复制该 Expert。
 
-如果 Batch 很小，分配到单个 Expert 的 token 数可能只有几个，导致：
+例如：
 
-* Expert GEMM 很小；
+```text
+Expert 7：
+Rank 1 有一份
+Rank 5 有一份
+Rank 9 有一份
+```
+
+Router 或调度器把目标为 Expert 7 的 token 分摊到不同副本。
+
+这样可以降低：
+
+* 单个 Rank 的 token 峰值；
+* AllToAll 热点；
+* Grouped GEMM Straggler；
+* Tail Latency。
+
+代价是：
+
+* 额外权重显存；
+* Expert Placement 更复杂；
+* 副本之间需要保持参数一致；
+* 路由需要感知副本位置。
+
+推理阶段权重不更新，因此副本一致性比训练简单。
+
+---
+
+## 12.18 Expert Placement
+
+即使每个 Rank 保存相同数量的 Experts，也不一定负载均衡。
+
+应根据 Expert 热度和网络拓扑决定放置方式。
+
+例如，不应把多个热点 Experts 全部放到同一 Rank：
+
+```text
+不合理：
+Rank 0：最热门的 4 个 Experts
+
+更合理：
+热点 Experts 分散到不同 Rank
+```
+
+跨节点 EP 还要考虑：
+
+* 哪些 Experts 经常被同一类请求共同激活；
+* 是否能减少跨节点流量；
+* 节点内 NVLink 与节点间网络的差异；
+* 是否需要 Hierarchical AllToAll。
+
+---
+
+## 12.19 Hierarchical AllToAll
+
+在多节点集群中，平坦 AllToAll 会让每张 GPU 与所有其他 GPU 直接交换数据，容易产生跨节点网络压力。
+
+分层 AllToAll 可以分成：
+
+1. 节点内聚合；
+2. 节点间交换；
+3. 节点内分发。
+
+例如：
+
+```text
+GPU
+ │
+ ▼
+节点内 NVLink 聚合
+ │
+ ▼
+节点间 InfiniBand 交换
+ │
+ ▼
+目标节点内 NVLink 分发
+```
+
+这种方式可能减少跨节点消息数量，但会增加本地重排和额外阶段。
+
+是否更快取决于：
+
+* 节点内互联带宽；
+* 节点间带宽；
+* 消息大小；
+* Rank 数量；
+* Expert 分布。
+
+---
+
+## 12.20 Decode 阶段为什么对 EP 特别困难
+
+Prefill 中：
+
+$$T=B\times S$$
+
+通常 token 数较多，分配到每个 Expert 的 token 数也相对较大。
+
+Decode 中每个请求每步只有一个新 token：
+
+$$T=B$$
+
+如果 Batch Size 较小，则：
+
+$$T_e\approx\frac{kB}{E}$$
+
+可能远小于 1。
+
+这意味着许多 Expert 每个 Decode Step 只能收到几个甚至零个 token。
+
+结果是：
+
+* Grouped GEMM 非常小；
 * Tensor Core 利用率低；
-* Grouped GEMM 效率差；
-* AllToAll 固定延迟无法摊薄。
+* AllToAll 固定延迟难以摊薄；
+* Permute 和 Metadata 开销占比增大；
+* Rank 间负载波动更明显。
 
-因此，EP 通常更依赖较高并发和较大的全局 Decode Batch。
+因此 MoE Decode 往往依赖高并发，把多个请求的 token 汇总成较大的全局 Batch。
 
 ---
+
+## 12.21 Attention DP + Expert EP
+
+现代 MoE 推理常让 Attention 和 Expert 使用不同并行策略。
+
+Attention 部分使用 DP（Data Parallelism，数据并行）：
+
+```text
+Rank 0：处理请求 A、B
+Rank 1：处理请求 C、D
+Rank 2：处理请求 E、F
+Rank 3：处理请求 G、H
+```
+
+每个 Rank 本地保存 Attention 权重和自己的 KV Cache，不需要逐层 TP AllReduce。
+
+进入 MoE Layer 后，所有 Rank 的 token 进入统一 EP Group：
+
+```text
+DP Attention Layout
+        │
+        ▼
+EP Dispatch AllToAll
+        │
+        ▼
+Expert Layout
+        │
+        ▼
+Expert Computation
+        │
+        ▼
+EP Combine AllToAll
+        │
+        ▼
+恢复 DP Attention Layout
+```
+
+这种设计的优势是：
+
+* Attention 避免高频 TP Collective；
+* 多个 DP Rank 的 token 汇总后，Expert Batch 更大；
+* Expert 权重可以分布到更多 GPU；
+* Attention KV Cache 与 Expert 权重可以独立扩展。
+
+---
+
+## 12.22 EP 的通信与计算重叠
+
+EP 优化的关键之一，是让 Dispatch、Expert GEMM 和 Combine 尽可能流水化。
+
+例如把 token 分成多个 Chunk：
+
+```text
+Chunk 0 Dispatch
+        │
+        ├── Chunk 0 Expert GEMM
+Chunk 1 Dispatch
+        │
+        ├── Chunk 1 Expert GEMM
+Chunk 0 Combine
+```
+
+理想情况下：
+
+* 通信 Stream 执行 AllToAll；
+* 计算 Stream 执行 Grouped GEMM；
+* 不同 Chunk 形成流水线。
+
+暴露在关键路径上的通信时间为：
+
+$$T_{\text{exposed comm}}=T_{\text{comm}}-T_{\text{overlapped}}$$
+
+但 Chunk 太小会增加：
+
+* Collective 启动次数；
+* Kernel Launch 次数；
+* Pack/Unpack 次数；
+* 小消息延迟。
+
+因此需要在流水粒度与启动开销之间折中。
+
+---
+
+## 12.23 EP 性能分析
+
+分析 EP 时，不能只看平均 GPU Utilization。
+
+至少需要观察：
+
+* 每个 Expert 的 token 数；
+* 每个 Rank 的发送和接收 token 数；
+* Dispatch AllToAll 时间；
+* Combine AllToAll 时间；
+* Permute 和 Unpermute 时间；
+* Grouped GEMM Shape；
+* 最慢 Rank 的完成时间；
+* 跨节点流量；
+* Expert Hotness；
+* 通信与计算重叠比例。
+
+如果时间线表现为：
+
+```text
+某些 Rank Grouped GEMM 很长
+其他 Rank 长时间等待
+```
+
+说明主要问题可能是 Expert Load Imbalance。
+
+如果表现为：
+
+```text
+Grouped GEMM 很短
+AllToAll 很长
+```
+
+则可能是：
+
+* Batch 太小；
+* EP Degree 过大；
+* EP 跨节点；
+* token 太少；
+* Pack/Unpack 成本过高。
+
+---
+
+## 12.24 TP、SP、UP、EP 的统一比较
+
+### 12.24.1 切分对象
+
+```text
+TP：
+切权重维度和 hidden/head 维度
+
+SP：
+切 TP 线性层之间的 token 激活
+
+UP：
+在序列分片与 Head 分片之间转换
+
+EP：
+切 Expert 集合，并动态迁移 token
+```
+
+---
+
+### 12.24.2 主要通信
+
+```text
+TP：
+AllReduce / ReduceScatter / AllGather
+
+SP：
+ReduceScatter + AllGather
+
+UP：
+AllToAll + AllToAll
+
+EP：
+AllToAllV Dispatch + AllToAllV Combine
+```
+
+---
+
+### 12.24.3 通信数据的性质
+
+TP 传输的是：
+
+```text
+Dense Activation Partial Results
+```
+
+各 Rank 的张量形状通常规则且相同。
+
+SP 传输的是：
+
+```text
+Dense Sequence Activation Shards
+```
+
+数据分布规则，通信量容易预测。
+
+UP 传输的是：
+
+```text
+QKV 和 Attention Output 的规则 Head/Sequence 分块
+```
+
+数据量规则，但 AllToAll 对拓扑敏感。
+
+EP 传输的是：
+
+```text
+由 Router 动态决定的 Routed Tokens
+```
+
+数据量可能不规则，负载与输入内容相关。
+
+---
+
+### 12.24.4 主要目标
+
+TP 的主要目标：
+
+* 分片模型权重；
+* 并行执行单层计算；
+* 降低大 GEMM 的单 Rank 计算量。
+
+SP 的主要目标：
+
+* 降低激活复制；
+* 减少 LayerNorm、Residual 等重复计算；
+* 与 TP 的 ReduceScatter/AllGather 配合。
+
+UP 的主要目标：
+
+* 分布式处理长序列 Attention；
+* 让每个 Rank 在完整序列上处理部分 Heads；
+* 复用本地高性能 Attention Kernel。
+
+EP 的主要目标：
+
+* 分布 MoE Expert 权重；
+* 利用稀疏激活；
+* 避免所有 Rank 保存全部 Experts。
+
+---
+
+### 12.24.5 对推理阶段的适用性
+
+### Prefill
+
+Prefill token 数较大：
+
+* TP 容易形成较大 GEMM；
+* SP 可以降低长序列激活；
+* UP 可以有效切分长上下文；
+* EP 的 Expert Batch 较大。
+
+因此四者通常都更容易在 Prefill 中发挥效率。
+
+### Decode
+
+Decode 每步 token 数较少：
+
+* TP 容易受到 Collective Latency 限制；
+* SP 的激活显存收益较小；
+* 标准 UP 难以切分 Query Sequence；
+* EP 容易产生小 Expert GEMM 和 AllToAll 固定开销。
+
+所以 Decode 更依赖：
+
+* 足够大的 Continuous Batch；
+* 较低 TP Degree；
+* Attention DP；
+* 高速节点内互联；
+* 专门的 Low-Latency EP 通信；
+* 通信计算重叠。
+
+---
+
+### 12.24.6 最核心的判断原则
+
+选择这些并行方式时，应分别回答四个问题。
+
+对于 TP：
+
+> 减少的矩阵计算时间，能否覆盖每层 Collective 的延迟？
+
+对于 SP：
+
+> 激活分片和逐元素计算节省，是否值得引入显式 AllGather/ReduceScatter 边界？
+
+对于 UP：
+
+> 长序列 Attention 的计算和显存收益，能否覆盖两次 AllToAll 和布局转换？
+
+对于 EP：
+
+> Expert 权重分布和稀疏计算收益，能否覆盖动态路由、Permute、两次 AllToAllV 与负载不均衡？
+
+推理 Infra 中不存在脱离负载和拓扑的“最佳并行方式”。
+
+最优方案取决于：
+
+* 模型结构；
+* Prefill/Decode 比例；
+* Batch Size；
+* Context Length；
+* Expert 数与 Top-$k$；
+* GPU 显存；
+* NVLink、NVSwitch、PCIe 和跨节点网络；
+* TTFT、TPOT 和吞吐量 SLO。
 
 # 13. Attention DP 与 Expert EP
 
@@ -2537,12 +4683,7 @@ PD 分离的关键代价是传输 KV Cache。
 
 单个请求的 KV 数据量近似为：
 
-$$
-M_{\text{KV, request}}
-======================
-
-2LSN_{kv}D_hb
-$$
+$$M_{\text{KV, request}}=2LSN_{kv}D_hb$$
 
 当 Prompt 很长时，KV Cache 传输量可能非常大。
 
@@ -2795,19 +4936,7 @@ GPU 1：Unconditional
 
 两个分支在大部分 DiT Forward 中彼此独立，只需要在每个 Diffusion Step 结束后汇总结果并进行 Guidance：
 
-$$
-\epsilon_{\text{guided}}
-========================
-
-\epsilon_{\text{uncond}}
-+
-w\left(
-\epsilon_{\text{cond}}
-----------------------
-
-\epsilon_{\text{uncond}}
-\right)
-$$
+$$\epsilon_{\text{guided}}=\epsilon_{\text{uncond}}+w\left(\epsilon_{\text{cond}}-\epsilon_{\text{uncond}}\right)$$
 
 CFG Parallelism 的通信频率相对较低，是 DiT 中非常自然的两路并行方法。
 
@@ -2832,14 +4961,7 @@ Attention 可以采用：
 
 总并行度可以表示为：
 
-$$
-P_{\text{SP}}
-=============
-
-P_{\text{Ulysses}}
-\times
-P_{\text{Ring}}
-$$
+$$P_{\text{SP}}=P_{\text{Ulysses}}\times P_{\text{Ring}}$$
 
 例如：
 
@@ -3078,18 +5200,10 @@ PipeFusion = 2
 总显存占用可以粗略分为：
 
 $$
-M_{\text{total}}
-================
-
-M_{\text{weights}}
-+
-M_{\text{KV}}
-+
-M_{\text{activations}}
-+
-M_{\text{workspace}}
-+
-M_{\text{runtime}}
+\begin{aligned}
+M_{\text{total}}={}&M_{\text{weights}}+M_{\text{KV}}+M_{\text{activations}}\\
+&+M_{\text{workspace}}+M_{\text{runtime}}
+\end{aligned}
 $$
 
 其中 Runtime 部分还可能包括：
@@ -3237,13 +5351,7 @@ DP Replica
 
 只有当：
 
-$$
-\text{计算时间减少量}
-
->
-
-\text{通信和同步增加量}
-$$
+$$\text{计算时间减少量}>\text{通信和同步增加量}$$
 
 扩展 GPU 才会获得实际加速。
 
