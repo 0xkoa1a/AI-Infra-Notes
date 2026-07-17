@@ -456,18 +456,7 @@ GPU 的 Tensor Core 可以极快地执行矩阵乘法，但 `exp`、`max`、除�
 
 加入新的 KV block 后，需要执行：
 
-$$
-O'
-==
-
-\frac{
-e^{m-m'}lO
-+
-e^{S_{\text{new}}-m'}V_{\text{new}}
-}{
-l'
-}
-$$
+$$O' = \frac{ e^{m-m'}lO + e^{S_{\text{new}}-m'}V_{\text{new}} }{ l' }$$
 
 这意味着每轮循环都需要对整个输出块执行归一化和重新缩放。
 
@@ -475,21 +464,11 @@ $$
 
 FlashAttention-2 改为维护未归一化累加器 $\widetilde O$：
 
-$$
-\widetilde O
-============
-
-\sum_j e^{s_j-m}v_j
-$$
+$$\widetilde O = \sum_j e^{s_j-m}v_j$$
 
 处理新的 KV block 时，先计算：
 
-$$
-m'
-==
-
-\max\left(m,\operatorname{rowmax}(S_{\text{new}})\right)
-$$
+$$m' = \max\left(m,\operatorname{rowmax}(S_{\text{new}})\right)$$
 
 定义旧结果的缩放系数：
 
@@ -499,30 +478,13 @@ $$
 
 当前 block 的未归一化概率为：
 
-$$
-\widetilde P_{\text{new}}
-=========================
-
-e^{S_{\text{new}}-m'}
-$$
+$$\widetilde P_{\text{new}} = e^{S_{\text{new}}-m'}$$
 
 然后更新：
 
-$$
-l'
-==
+$$l' = \alpha l+ \operatorname{rowsum}(\widetilde P_{\text{new}})$$
 
-\alpha l+
-\operatorname{rowsum}(\widetilde P_{\text{new}})
-$$
-
-$$
-\widetilde O'
-=============
-
-\alpha\widetilde O+
-\widetilde P_{\text{new}}V_{\text{new}}
-$$
+$$\widetilde O' = \alpha\widetilde O+ \widetilde P_{\text{new}}V_{\text{new}}$$
 
 只有遍历完所有 KV block 后，才进行一次归一化：
 
@@ -594,13 +556,7 @@ parallel for each batch, head, query_block i:
 
 因此，forward 的 thread block 数量约为：
 
-$$
-N_{\text{CTA}}^{\text{v2}}
-==========================
-
-B\times H\times
-\left\lceil\frac{N}{B_r}\right\rceil
-$$
+$$N_{\text{CTA}}^{\text{v2}} = B\times H\times \left\lceil\frac{N}{B_r}\right\rceil$$
 
 不同 Query block 写入不同的输出行，不存在写冲突，也不需要 thread block 之间通信。
 
@@ -632,12 +588,7 @@ FlashAttention v1 的划分方式大致为：
 
 每个 warp 得到相同 Query 行对应的一部分输出：
 
-$$
-O^{(w)}
-=======
-
-P^{(w)}V^{(w)}
-$$
+$$O^{(w)} = P^{(w)}V^{(w)}$$
 
 最后必须将各 warp 的部分结果相加：
 
@@ -678,21 +629,16 @@ $$
 
 随后得到自己负责的输出：
 
-$$
-O^{(w)}
-=======
-
-\operatorname{softmax}(S^{(w)})V
-$$
+$$O^{(w)} = \operatorname{softmax}(S^{(w)})V$$
 
 由于不同 warp 负责不同的输出行，它们的结果互不重叠：
 
 $$
 O=
 \begin{bmatrix}
-O^{(0)}\
-O^{(1)}\
-O^{(2)}\
+O^{(0)} \\
+O^{(1)} \\
+O^{(2)} \\
 O^{(3)}
 \end{bmatrix}
 $$

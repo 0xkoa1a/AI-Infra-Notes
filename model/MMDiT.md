@@ -1,0 +1,337 @@
+# MMDiT：面向推理 Infra 的结构与性能分析
+
+本文假设读者已经理解 DiT 的 latent、patchify、去噪循环、时间步条件和 Transformer Block，不再重复扩散模型基础。
+
+这里讨论的 MMDiT（Multimodal Diffusion Transformer）主要指 Stable Diffusion 3 引入的双流结构：图像 token 和文本 token 使用不同参数处理，但在每层 Joint Attention 中共同参与注意力计算。
+
+最短的定义是：
+
+> MMDiT 是“两套模态专属 Transformer 参数 + 一次联合 Attention”，而不是普通 DiT 后面再附加一个 Cross-Attention。
+
+## 导航
+
+* [MMDiT 相比 DiT 改了什么](#mmdit-相比-dit-改了什么)
+* [双流输入与条件路径](#双流输入与条件路径)
+* [Joint Attention 的精确计算过程](#joint-attention-的精确计算过程)
+* [一个 MMDiT Block 的执行流程](#一个-mmdit-block-的执行流程)
+* [张量形状与计算量](#张量形状与计算量)
+* [为什么没有 LLM 式 KV Cache](#为什么没有-llm-式-kv-cache)
+* [推理端到端路径](#推理端到端路径)
+* [算子与内核视角](#算子与内核视角)
+* [显存分析](#显存分析)
+* [并行策略与通信量](#并行策略与通信量)
+* [主要性能瓶颈](#主要性能瓶颈)
+* [Profiling 与优化顺序](#profiling-与优化顺序)
+* [实现映射与容易踩坑的地方](#实现映射与容易踩坑的地方)
+
+---
+
+## MMDiT 相比 DiT 改了什么
+
+原始 DiT 通常只有图像 latent token 主干。类别或全局条件通过 adaLN 等方式注入；文本条件 DiT 也常使用“图像 Self-Attention + 图像查询文本的 Cross-Attention”。
+
+MMDiT 的核心差异是将文本提升为会在网络内部持续演化的第二条 token 流。
+
+| 方面 | 普通文本条件 DiT | MMDiT |
+| --- | --- | --- |
+| 主 token 流 | 主要是图像 token | 图像与文本双流 |
+| 模态参数 | 图像主干；文本多作为外部 K/V | 图像、文本分别拥有 QKV、输出投影、Norm 和 MLP 参数 |
+| 跨模态交互 | 通常由 image-to-text Cross-Attention 完成 | Joint Attention 同时包含四种注意力关系 |
+| 信息方向 | 主要是文本影响图像 | 图像与文本双向更新 |
+| 文本中间状态 | 常可保持为冻结 encoder 输出 | 在多数 MMDiT Block 中会被图像和时间步共同改变 |
+| Attention 序列 | 图像 Self-Attention 与 Cross-Attention 分开 | 在长度 $N_i+N_t$ 的联合序列上执行一次全注意力 |
+| Infra 影响 | 多个不同 Attention Kernel | 更大的 Joint Attention，加上两套模态专属投影和 MLP |
+
+需要区分两件事：
+
+1. **参数不共享**：两种模态先分别做 QKV Projection、输出投影和 MLP；
+2. **Attention 空间共享**：投影后的 Q、K、V 被拼接，在一个联合注意力空间中计算。
+
+所以 MMDiT 既不是两套完全独立的 Transformer，也不是把原始 text/image embedding 直接拼接后用同一套权重处理。
+
+---
+
+## 双流输入与条件路径
+
+### 图像流
+
+带噪 latent 记为：
+
+$$z_t\in\mathbb{R}^{B\times C\times H_l\times W_l}$$
+
+patch size 为 $p_h\times p_w$ 时，图像 token 数为：
+
+$$N_i=\frac{H_l}{p_h}\frac{W_l}{p_w}$$
+
+经过 Patch Embedding 后：
+
+$$X_i\in\mathbb{R}^{B\times N_i\times D}$$
+
+这部分与普通 DiT 相同。高分辨率下的主要扩展变量仍然是 $N_i$。
+
+### 文本流
+
+文本编码器产生 token-level conditioning：
+
+$$C_{\text{token}}\in\mathbb{R}^{B\times N_t\times D_c}$$
+
+MMDiT 先将其投影到 Transformer 的联合维度：
+
+$$X_t=C_{\text{token}}W_c\in\mathbb{R}^{B\times N_t\times D}$$
+
+Stable Diffusion 3 的 Pipeline 可以组合多个文本编码器。对 Infra 而言，更重要的不是编码器名称，而是分清两类输出：
+
+* token-level embedding：进入 Joint Attention，形状与 $N_t$ 有关；
+* pooled projection：与 timestep embedding 组合，用于每层的条件调制。
+
+### 时间步与 pooled text 条件
+
+记 timestep embedding 与 pooled text embedding 的组合为：
+
+$$e=\operatorname{TimeTextEmbed}(t,c_{\text{pooled}})\in\mathbb{R}^{B\times D}$$
+
+$e$ 不作为普通 token 拼到联合序列中，而是为图像流和文本流的 Adaptive Norm、Scale、Shift 与 Gate 提供条件。
+
+这意味着同一个 prompt 在不同去噪步上虽然 token encoder 输出不变，但 Block 内部的归一化输入和门控仍随 $t$ 改变。
+
+---
+
+## Joint Attention 的精确计算过程
+
+设进入某一层的图像和文本 hidden states 分别为：
+
+$$X_i\in\mathbb{R}^{B\times N_i\times D},\qquad X_t\in\mathbb{R}^{B\times N_t\times D}$$
+
+### 先分别投影
+
+图像流使用图像专属参数：
+
+$$Q_i=X_iW_i^Q,\qquad K_i=X_iW_i^K,\qquad V_i=X_iW_i^V$$
+
+文本流使用另一套参数：
+
+$$Q_t=X_tW_t^Q,\qquad K_t=X_tW_t^K,\qquad V_t=X_tW_t^V$$
+
+不能先拼接 $X_i$ 与 $X_t$ 再做一套共享 QKV Projection，否则会丢失 MMDiT 的“模态专属权重”设计。
+
+### 再拼接 Q、K、V
+
+以文本在前、图像在后为例：
+
+$$Q=[Q_t;Q_i],\qquad K=[K_t;K_i],\qquad V=[V_t;V_i]$$
+
+联合序列长度为：
+
+$$N=N_t+N_i$$
+
+然后执行一次标准的非因果全注意力：
+
+$$O=\operatorname{softmax}\left(\frac{QK^{\mathsf T}}{\sqrt{d_h}}\right)V$$
+
+Attention Kernel 不需要理解“文本”或“图像”的语义；从 Kernel 视角看，它处理的是长度为 $N_t+N_i$ 的普通序列。
+
+### 最后拆分输出
+
+按照原来的 token 边界拆分：
+
+$$O=[O_t;O_i]$$
+
+再分别通过模态专属输出投影：
+
+$$Y_t=O_tW_t^O,\qquad Y_i=O_iW_i^O$$
+
+之后两条流分别执行 Residual、Adaptive Norm 和 MLP。
+
+### 四个 Attention 子块
+
+联合注意力矩阵可以写成：
+
+$$
+A=\operatorname{softmax}\left(
+\frac{1}{\sqrt{d_h}}
+\begin{bmatrix}
+Q_tK_t^{\mathsf T} & Q_tK_i^{\mathsf T}\\
+Q_iK_t^{\mathsf T} & Q_iK_i^{\mathsf T}
+\end{bmatrix}
+\right)
+$$
+
+四个区域分别表示：
+
+| 子块 | Query → Key | 作用 |
+| --- | --- | --- |
+| $A_{tt}$ | 文本 → 文本 | 文本 token 内部交互 |
+| $A_{ti}$ | 文本 → 图像 | 图像内容反向更新文本流 |
+| $A_{it}$ | 图像 → 文本 | 文本条件影响图像 token |
+| $A_{ii}$ | 图像 → 图像 | 图像空间和全局结构建模 |
+
+普通 Cross-Attention 主要计算 $A_{it}$。MMDiT 同时保留其他三个区域，因此文本和图像是双向交互，而非单向条件读取。
+
+---
+
+## 一个 MMDiT Block 的执行流程
+
+典型 Block 可以概括为：
+
+```text
+image hidden ── Adaptive Norm / Gate ── image QKV ─┐
+                                                   ├─ concat QKV
+text hidden  ── Adaptive Norm / Gate ── text QKV  ─┘
+                                                           │
+                                                           ▼
+                                                    Joint Attention
+                                                           │
+                                      ┌──── split output ──┴─────┐
+                                      ▼                           ▼
+                              image output proj             text output proj
+                                      │                           │
+                              image residual                 text residual
+                                      │                           │
+                               image Norm + MLP              text Norm + MLP
+                                      │                           │
+                              next image hidden              next text hidden
+```
+
+写成简化伪代码：
+
+```python
+image_norm, image_gates = image_adaln(image_hidden, temb)
+text_norm, text_gates = text_adaln(text_hidden, temb)
+
+qi, ki, vi = image_qkv(image_norm)
+qt, kt, vt = text_qkv(text_norm)
+
+q = concat(qt, qi, dim="sequence")
+k = concat(kt, ki, dim="sequence")
+v = concat(vt, vi, dim="sequence")
+
+joint = attention(q, k, v)
+text_attn, image_attn = split(joint, [text_tokens, image_tokens])
+
+image_hidden += image_gate_attn * image_out(image_attn)
+text_hidden += text_gate_attn * text_out(text_attn)
+
+image_hidden += image_gate_mlp * image_mlp(image_norm2(image_hidden))
+text_hidden += text_gate_mlp * text_mlp(text_norm2(text_hidden))
+```
+
+实际实现还可能包含 QK Norm、额外的图像 Self-Attention、ControlNet Residual、LoRA 或 IP-Adapter 分支，但双流 Joint Attention 是判断其是否属于 MMDiT 的核心。
+
+### Context-pre-only 最后一层
+
+在常见 SD3 实现中，最后一个 Joint Transformer Block 可以标记为 `context_pre_only`：文本仍提供 Joint Attention 所需的上下文，但不再执行完整的文本输出更新和文本 MLP，最终只保留图像流供输出层使用。
+
+这样做的原因很直接：去噪网络最后只需要生成图像 latent 预测，不需要输出最终文本表示。
+
+对性能模型而言，最后一层不能机械地按“完整双流 Block”估算，它少了一部分文本流算子。
+
+---
+
+## 张量形状与计算量
+
+### Joint Attention
+
+联合序列长度为：
+
+$$N=N_i+N_t$$
+
+忽略常数和 Head 拆分，Attention 的主要计算量为：
+
+$$\operatorname{FLOPs}_{\text{attn}}=O\left(B(N_i+N_t)^2D\right)$$
+
+展开后：
+
+$$
+(N_i+N_t)^2=N_i^2+2N_iN_t+N_t^2
+$$
+
+各项对应：
+
+* $N_i^2$：图像内部 Attention；
+* $2N_iN_t$：双向跨模态 Attention；
+* $N_t^2$：文本内部 Attention。
+
+相比“图像 Self-Attention + 单向 image-to-text Cross-Attention”，MMDiT 额外引入了反向跨模态项和文本内部项。
+
+高分辨率下通常 $N_i\gg N_t$，因此 $N_i^2$ 仍是主项。但 $N_t$ 会改变 Attention Kernel 的实际序列长度、tile 边界、显存访问和并行切分方式，不能在实现中完全忽略。
+
+### QKV 与输出投影
+
+两条流的 QKV Projection 总计算量近似为：
+
+$$O\left(B(N_i+N_t)D^2\right)$$
+
+它与单流 Transformer 的数量级相同，但被拆成图像和文本两组 GEMM。由于两组权重不同，不能简单合并成一次共享权重 GEMM。
+
+### 双 MLP
+
+若 MLP expansion ratio 为 $r$，每层两条流的 MLP 计算量近似为：
+
+$$O\left(Br(N_i+N_t)D^2\right)$$
+
+图像 MLP 通常是大 GEMM；文本 MLP 的 token 数较少，更容易成为低利用率的小 GEMM和 Kernel Launch 开销来源。
+
+---
+
+## 为什么没有 LLM 式 KV Cache
+
+MMDiT 推理不能直接套用自回归 LLM 的 KV Cache 直觉。
+
+### 去噪步之间，图像 token 全部变化
+
+每个去噪步都产生新的 latent：
+
+$$z_t\rightarrow z_{t-1}$$
+
+下一步的全部图像 Q、K、V 都需要重新计算，没有“只追加一个新 token”的增量结构。
+
+### 文本流也不是完全静态
+
+虽然文本编码器输出对同一个 prompt 不变，但进入 MMDiT 后：
+
+* 文本 hidden state 会通过 $A_{ti}$ 读取当前图像状态；
+* Adaptive Norm 和 Gate 依赖当前 timestep；
+* 每层文本表示继续经过 Residual 和 MLP。
+
+因此，MMDiT 内部某一层的 Text K/V 同样随 Block 和去噪步变化，通常不能跨 step 缓存。
+
+### 真正可以缓存的内容
+
+同一个 prompt 的以下内容可以缓存：
+
+* tokenizer 结果；
+* 文本编码器的 token embedding；
+* pooled text projection；
+* 与 prompt 和分辨率相关的静态 mask、position metadata；
+* 编译后的固定 shape Graph。
+
+文本编码器完成后还可以被 Offload；但这不等于 MMDiT 内部文本分支可以被删除或缓存。
+
+---
+
+## 总结
+
+MMDiT 相比 DiT 最重要的变化不是扩散公式，而是条件交互结构：
+
+```text
+modality-specific projections and MLPs
+                +
+joint text-image attention
+                +
+bidirectional hidden-state updates
+```
+
+对推理 Infra 工程师，最需要记住五点：
+
+1. Joint Attention 的有效序列长度是 $N_i+N_t$，高分辨率下计算呈二次增长；
+2. 两种模态权重不同，QKV 只能各自融合，不能改成共享 Projection；
+3. 文本流会被当前图像和 timestep 更新，不能使用 LLM 式跨 step KV Cache；
+4. 多 GPU 通信字节数由联合 hidden state 决定，但双流可能增加 Collective 次数和 Layout 开销；
+5. 优化应同时观察 Joint Attention、大图像 GEMM、小文本 GEMM、Pack/Split 和通信，而不是只看总 FLOPs。
+
+## 参考资料
+
+* [Scaling Rectified Flow Transformers for High-Resolution Image Synthesis](https://arxiv.org/abs/2403.03206)
+* [Diffusers SD3Transformer2DModel](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/transformers/transformer_sd3.py)
+* [Diffusers JointTransformerBlock](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention.py)
+* [Diffusers Stable Diffusion 3 Pipeline](https://huggingface.co/docs/diffusers/main/api/pipelines/stable_diffusion/stable_diffusion_3)
