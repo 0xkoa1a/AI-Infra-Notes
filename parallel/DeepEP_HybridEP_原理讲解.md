@@ -1,11 +1,5 @@
 # DeepEP 原理深度讲解 & Hybrid EP 为何能省 SM
 
-> 面向：通算融合 AI Infra 工程师  
-> 范围：DeepEP（DeepSeek Expert Parallelism 通信库）核心机制、HT/LL 两条路径、NVLink↔RDMA 层次化转发、SM 预算与计算重叠；以及 Hybrid-EP / Hybrid Mode 省 SM 的具体原理  
-> 主要参考：[deepseek-ai/DeepEP](https://github.com/deepseek-ai/DeepEP)、[DeepEP V2 / PR #605](https://github.com/deepseek-ai/DeepEP/pull/605)、[NVIDIA Hybrid-EP Blog](https://developer.nvidia.com/blog/optimizing-communication-for-mixture-of-experts-training-with-hybrid-expert-parallel/)、[Anatomy of a high-performance EP kernel](https://fergusfinn.com/blog/anatomy-of-a-high-performance-ep-kernel/)、DeepSeek-V3 Technical Report
-
----
-
 ## 0. 一句话直觉
 
 **经典集合通信**像「固定时刻表的公交」：谁发给谁、发多少，在 launch 前就定死了。  

@@ -1,23 +1,44 @@
 # Ulysses Parallelism
 
-Ulysses Parallelism（UP）是一种 Attention 内部的序列并行方法。它通过 AllToAll 在“部分序列、全部 Heads”和“完整序列、部分 Heads”之间转换，使每个 Rank 能直接使用本地 Attention Kernel。
+## Ulysses Parallelism
 
+Ulysses Parallelism（UP）的核心，是用 AllToAll 在“部分序列、全部 Heads”和“完整序列、部分 Heads”之间转换。这样既能沿序列维度保存分片激活，又能让每个 Rank 直接调用本地 Attention Kernel。
 
-## 张量布局与执行流程
+---
 
-### 初始张量布局
+### 统一符号
 
-设：
+设输入隐藏状态为：
 
-* Batch Size 为 $B$；
-* 序列长度为 $S$；
-* Attention Head 数为 $N_h$；
-* 每个 Head 维度为 $D_h$；
-* UP Degree 为 $p$。
+$$X\in\mathbb{R}^{B\times S\times H}$$
 
-假设序列均匀切分。
+其中：
 
-每个 Rank 初始持有：
+* $B$ 是 batch size；
+* $S$ 是序列长度；
+* $H$ 是 hidden size；
+* $N_h$ 是 Attention Head 数；
+* $D_h$ 是每个 Head 的维度，$H=N_hD_h$；
+* $p$ 是 UP Degree；
+* $b$ 是每个元素的字节数。
+
+假设序列和 Head 都能被 $p$ 均匀切分。
+
+下文通信量均指一次前向中每 Rank 实际经网络发送的数据量，训练反向不计入。
+
+完整隐藏状态的数据量记为：
+
+$$N=BSHb$$
+
+---
+
+### Sequence-Sharded Layout
+
+UP 的输入沿序列维度切分。第 $r$ 个 Rank 持有：
+
+$$X_r\in\mathbb{R}^{B\times S/p\times H}$$
+
+QKV Projection 后：
 
 $$Q_r,K_r,V_r\in\mathbb{R}^{B\times S/p\times N_h\times D_h}$$
 
@@ -28,96 +49,24 @@ $$Q_r,K_r,V_r\in\mathbb{R}^{B\times S/p\times N_h\times D_h}$$
 全部 Attention Heads
 ```
 
-例如：
-
-```text
-S   = 4096
-N_h = 32
-UP  = 4
-
-Rank 0：token 0～1023，Heads 0～31
-Rank 1：token 1024～2047，Heads 0～31
-Rank 2：token 2048～3071，Heads 0～31
-Rank 3：token 3072～4095，Heads 0～31
-```
+这个布局不能直接计算完整 Self-Attention。因为每个 Query 都需要访问整个序列的 K 和 V，而当前 Rank 只有本地的 $1/p$ 序列。
 
 ---
 
-### 为什么这种布局不能直接独立算完整 Attention
+### AllToAll：从序列分片变成 Head 分片
 
-Rank 0 虽然拥有全部 Heads，但只拥有前 $1/4$ 的 K 和 V。
+每个源 Rank 将本地 Head 切成 $p$ 组，并把不同 Head Group 发送给不同目标 Rank。
 
-对于 Rank 0 的 Query，完整 Attention 应该访问整个上下文：
-
-$$K=[K_0;K_1;\ldots;K_{p-1}]$$
-
-$$V=[V_0;V_1;\ldots;V_{p-1}]$$
-
-如果 Rank 0 只使用本地 $K_0,V_0$，它只能看到局部上下文，结果不等价于完整 Attention。
-
-因此必须进行跨 Rank 数据交换。
-
----
-
-### Ulysses 的 AllToAll 布局转换
-
-UP 将每个 Rank 的 Head 维度切成 $p$ 组：
-
-$$N_h=\frac{N_h}{p}\times p$$
-
-每个源 Rank 将不同 Head Group 发送给不同目标 Rank。
-
-例如：
+以 Rank 0 为例：
 
 ```text
-Rank 0 原有：
-token 0～1023，Heads 0～31
-
-切成：
-Heads 0～7   → Rank 0
-Heads 8～15  → Rank 1
-Heads 16～23 → Rank 2
-Heads 24～31 → Rank 3
+token 0～1023，Heads  0～7  → Rank 0
+token 0～1023，Heads  8～15 → Rank 1
+token 0～1023，Heads 16～23 → Rank 2
+token 0～1023，Heads 24～31 → Rank 3
 ```
 
-其他 Rank 也执行相同操作。
-
-AllToAll 后，Rank 0 收到所有序列分片上的 Heads 0～7：
-
-```text
-Rank 0：
-token 0～4095，Heads 0～7
-
-Rank 1：
-token 0～4095，Heads 8～15
-
-Rank 2：
-token 0～4095，Heads 16～23
-
-Rank 3：
-token 0～4095，Heads 24～31
-```
-
-张量形状变为：
-
-$$Q'_r,K'_r,V'_r\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
-
-也就是：
-
-```text
-完整序列
-部分 Attention Heads
-```
-
----
-
-### 为什么 AllToAll 能实现这个转换
-
-AllToAll 的语义是：
-
-> 每个 Rank 为不同目标 Rank 准备不同数据，通信后每个目标 Rank 收集来自所有源 Rank 的对应数据。
-
-源 Rank 按 Head Group 切分本地序列块：
+将 Rank $r$ 的 Q 写成：
 
 $$Q_r=[Q_{r\rightarrow0},Q_{r\rightarrow1},\ldots,Q_{r\rightarrow p-1}]$$
 
@@ -125,7 +74,7 @@ $$Q_r=[Q_{r\rightarrow0},Q_{r\rightarrow1},\ldots,Q_{r\rightarrow p-1}]$$
 
 $$Q_{r\rightarrow j}\in\mathbb{R}^{B\times S/p\times N_h/p\times D_h}$$
 
-目标 Rank $j$ 收到：
+目标 Rank $j$ 收集所有源 Rank 发来的第 $j$ 组 Heads：
 
 $$Q'_j=[Q_{0\rightarrow j};Q_{1\rightarrow j};\ldots;Q_{p-1\rightarrow j}]$$
 
@@ -133,198 +82,151 @@ $$Q'_j=[Q_{0\rightarrow j};Q_{1\rightarrow j};\ldots;Q_{p-1\rightarrow j}]$$
 
 $$Q'_j\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
 
-K 和 V 同理。
-
-因此，一次 AllToAll 同时完成：
+K 和 V 同理。因此一次 AllToAll 同时完成：
 
 * 序列维度的 Gather；
 * Head 维度的 Scatter。
 
-它不是简单复制完整张量，而是做张量布局转置。
+通信后的布局变成：
+
+```text
+Rank 0：完整序列，Heads  0～7
+Rank 1：完整序列，Heads  8～15
+Rank 2：完整序列，Heads 16～23
+Rank 3：完整序列，Heads 24～31
+```
+
+AllToAll 没有在每个 Rank 上复制完整 QKV，而是在序列维度和 Head 维度之间做分布式转置。
 
 ---
 
-### 本地 Attention
+### 本地 Attention 与反向 AllToAll
 
-布局转换后，每个 Rank 拥有：
-
-* 完整序列；
-* 部分 Heads。
-
-不同 Attention Heads 相互独立，因此每个 Rank 可以本地执行：
+AllToAll 后，每个 Rank 拥有完整序列和一部分 Heads。不同 Heads 的计算彼此独立，因此可以直接执行本地 Attention：
 
 $$O'_r=\operatorname{Attention}(Q'_r,K'_r,V'_r)$$
 
-输出形状为：
+其中：
 
 $$O'_r\in\mathbb{R}^{B\times S\times N_h/p\times D_h}$$
 
-这一步可以使用成熟的单卡 FlashAttention（闪存注意力）Kernel，因为对于本地 Head 子集而言，序列是完整的。
+对于本 Rank 负责的 Head 子集，序列是完整的，因此可以复用单卡 FlashAttention Kernel。
 
----
-
-### 反向 AllToAll
-
-Attention 输出后，通常需要恢复 Sequence-Sharded Layout。
-
-当前布局为：
+Attention 完成后，再执行一次反向 AllToAll：
 
 ```text
-完整序列
-部分 Heads
+完整序列，部分 Heads
+        │
+        ▼
+AllToAll
+        │
+        ▼
+部分序列，全部 Heads
 ```
 
-通过第二次 AllToAll，转换回：
-
-```text
-部分序列
-全部 Heads
-```
-
-最终每个 Rank 得到：
+最终第 $r$ 个 Rank 得到：
 
 $$O_r\in\mathbb{R}^{B\times S/p\times N_h\times D_h}$$
 
-例如：
+Output Projection、Residual、LayerNorm 和 MLP 都可以继续在本地序列分片上执行。
+
+---
+
+### 一组 Ulysses Attention 的完整过程
 
 ```text
-Rank 0：token 0～1023，Heads 0～31
-Rank 1：token 1024～2047，Heads 0～31
-...
-```
-
-因此 UP 的 Attention 主流程为：
-
-```text
-部分序列，全部 Heads
+Sequence-Sharded 输入
+每 Rank：[B, S/p, H]
+        │
+        ▼
+本地 QKV Projection
+        │
+每 Rank：[B, S/p, Nh, Dh]
         │
         ▼
 QKV AllToAll
         │
-        ▼
-完整序列，部分 Heads
+每 Rank：[B, S, Nh/p, Dh]
         │
         ▼
 Local Attention
         │
+每 Rank：[B, S, Nh/p, Dh]
+        │
         ▼
 Output AllToAll
         │
+每 Rank：[B, S/p, Nh, Dh]
+        │
         ▼
-部分序列，全部 Heads
+本地 Output Projection / MLP
 ```
+
+纯 UP 只切分 Attention 激活，本身不切分线性层权重。它降低长序列激活和 Attention 计算的单卡压力；若不再组合其他权重分片方案，每个 Rank 仍需持有完整参数。
 
 ---
 
-## 通信与通信量
-
 ### UP 的通信量
 
-为了与 TP + SP 使用相同口径，设完整 Attention 输出激活的大小为：
+以下都采用每 Rank 实际经网络发送的数据量，不计算发给自己的部分。
 
-$$N=BSHb$$
-
-其中 $b$ 为每个元素的字节数。序列被 $p$ 个 Rank 均匀切分后，每个 Rank 的本地输出 Buffer 大小为：
-
-$$N_{\text{O,local}}=\frac{N}{p}$$
-
-对于标准 MHA，Q、K、V 的完整大小都约为 $N$，因此每个 Rank 在第一次 AllToAll 前持有的本地 QKV Buffer 为：
+对于标准 MHA，完整 Q、K、V、O 的大小都约为 $N$。序列切分后，每个 Rank 持有的本地 QKV Buffer 为：
 
 $$N_{\text{QKV,local}}=3\frac{N}{p}$$
 
-均匀 AllToAll 中，发给自己的 $1/p$ 数据不经过网络，因此第一次 AllToAll 每 Rank 发送量为：
+均匀 AllToAll 中，发给自己的 $1/p$ 数据不经过网络，因此第一次 AllToAll 的每 Rank 发送量为：
 
-$$V_{\text{QKV A2A}}=\frac{p-1}{p}N_{\text{QKV,local}}=3\frac{p-1}{p^2}N$$
+$$V_{\text{QKV A2A}}=3\frac{p-1}{p^2}N$$
 
-第二次 AllToAll 每 Rank 发送量为：
+Attention 输出的本地 Buffer 大小为 $N/p$，第二次 AllToAll 的发送量为：
 
-$$V_{\text{O A2A}}=\frac{p-1}{p}N_{\text{O,local}}=\frac{p-1}{p^2}N$$
+$$V_{\text{O A2A}}=\frac{p-1}{p^2}N$$
 
-因此总发送量为：
+因此一组 Ulysses Attention 的每 Rank 总发送量为：
 
 $$V_{\text{UP}}=4\frac{p-1}{p^2}N$$
-
-这里的第二个 $1/p$ 来自本地序列分片的大小。
-
-对于 GQA 或 MQA，K、V 小于 Q。若完整 Q 和 O 的大小均为 $N$，完整 K 和 V 的大小均为 $N_{KV}$，则更一般的结果为：
-
-$$V_{\text{UP}}=2\frac{p-1}{p^2}\left(N+N_{KV}\right)$$
-
-该式假设 Head 能均匀切分，且没有因 KV Head 复制或 Padding 引入额外流量。
-
-实际系统通常会把 Q、K、V 合并到同一个 Buffer 中执行一次 AllToAll，而不是分别发起三次 Collective，从而减少通信启动次数。
 
 ---
 
 ### TP + SP 与 UP 的通信量比较
 
-比较一个包含标准 MHA 和 MLP 的完整 Transformer Layer，并令两种方案的并行度都为 $p$、各子层边界处的完整隐藏状态大小都为 $N=BSHb$。
+比较一个包含标准 MHA 和 MLP 的完整 Transformer Layer，并令两种方案的并行度都为 $p$。
 
-TP + SP 在 Attention 子层执行一组 AllGather + ReduceScatter，在 MLP 子层再执行一组 AllGather + ReduceScatter。因此每 Rank 的整层发送量为：
+TP + SP 在 Attention 和 MLP 两个子层各执行一组 AllGather + ReduceScatter：
 
 $$V_{\text{TP+SP, layer}}=4\frac{p-1}{p}N$$
 
-纯 UP 始终保持序列分片，MLP 可以直接处理本地 token，不需要通信；只有 Attention 需要交换三个本地 QKV 分片和一个本地输出分片：
+纯 UP 始终保持序列分片。MLP 直接处理本地 token，只有 Attention 需要交换 Q、K、V 和 O：
 
 $$V_{\text{UP, layer}}=4\frac{p-1}{p^2}N$$
 
-因此两者每 Rank 发送量之比为：
+因此整层每 Rank 发送量之比为：
 
 $$\frac{V_{\text{UP, layer}}}{V_{\text{TP+SP, layer}}}=\frac{1}{p}$$
 
-UP 相对 TP + SP 节省的理想通信比例为：
+UP 的通信量是通过避免完整序列复制省出来的：
 
-$$1-\frac{V_{\text{UP, layer}}}{V_{\text{TP+SP, layer}}}=1-\frac{1}{p}$$
+* TP + SP 的 AllGather 会让每个 Rank 获得大小为 $N$ 的完整序列激活；
+* UP 的 AllToAll 只重新分发本 Rank 已持有的 $N/p$ 序列分片；
+* MLP 保持 Sequence-Sharded Layout，不需要额外 Collective。
 
-例如 $p=4$ 时，UP 的整层每 Rank 发送量是 TP + SP 的四分之一；$p=8$ 时是八分之一。
+如果只比较 Attention 子层，TP + SP 的发送量为 $2(p-1)N/p$，此时两者之比为：
 
-通信量是通过避免完整序列复制省出来的：
+$$\frac{V_{\text{UP, attention}}}{V_{\text{TP+SP, attention}}}=\frac{2}{p}$$
 
-* TP + SP 的两次 AllGather 分别在 Attention 和 MLP 前把序列分片复制到所有 Rank，使每个 TP Rank 都获得大小为 $N$ 的完整激活；
-* UP 的 AllToAll 不复制完整张量，只把本 Rank 已持有的 $N/p$ 序列分片按 Head 重新分发；
-* UP 虽然在 Attention 中交换 Q、K、V、O 四份数据，但每份数据在通信前都只有完整张量的 $1/p$，所以总量带有额外的 $1/p$ 因子；
-* UP 的 MLP 保持序列分片布局，无需 TP+SP 在 MLP 边界上的第二组 AllGather + ReduceScatter。
+上面的 $1/p$ 是完整 Transformer Layer 的比较结果。
 
-如果只比较 Attention 子层而不计 MLP，TP + SP 的发送量为 $2(p-1)N/p$，此时 UP 与 TP + SP 的比值为 $2/p$；上面的 $1/p$ 是完整 Transformer Layer 的比较结果。
-
-这只是通信字节数的对比。TP 同时切分模型权重，而纯 UP 通常复制 Attention 和 MLP 权重；AllGather/ReduceScatter 与 AllToAll 的实际延迟、拓扑适配和 Pack/Unpack 开销也不同，因此通信量更小不等于端到端一定更快。
 
 ---
 
-## 通信性能分析
+### UP 的性能瓶颈
 
-### UP 的通信成本不仅由字节数决定
+在完全串行的情况下，UP 的关键路径可以粗略写成：
 
-AllToAll 的理论发送量看起来与 AllGather 相似，但实际性能往往更敏感。
+$$T_{\text{UP}}\approx T_{\text{pack}}+T_{\text{QKV A2A}}+T_{\text{attention}}+T_{\text{O A2A}}+T_{\text{unpack}}$$
 
-原因是 AllToAll 需要：
+主要瓶颈包括：
 
-* 每个 Rank 向多个目标 Rank 发送不同数据；
-* 对数据进行 Split、Pack 和 Reorder；
-* 处理多对多链路争用；
-* 等待最慢 Rank 完成。
-
-时间可以粗略表示为：
-
-$$T_{\text{UP}}\approx T_{\text{pack}}+T_{\text{all-to-all}}+T_{\text{attention}}+T_{\text{all-to-all}}+T_{\text{unpack}}$$
-
-其中 Pack 和 Unpack 属于本地显存操作，不计入网络通信量，但仍会消耗 HBM（High Bandwidth Memory，高带宽显存）带宽和 Kernel 时间。
-
----
-
-## 性能瓶颈总结
-
-UP 的理论字节数低，但实际瓶颈通常来自以下方面：
-
-| 瓶颈 | 表现 | 根因或约束 |
-| --- | --- | --- |
-| AllToAll 尾延迟 | 平均带宽不低但 Collective 完成慢 | 多对多链路争用，由最慢 Rank 或最拥塞链路决定 |
-| Pack/Unpack | NCCL 外仍有明显 HBM Kernel | Head/sequence 布局转换需要 Split、Transpose 和 Reorder |
-| Head 数限制 | UP Degree 无法继续增大 | 通常要求 $N_h\bmod p=0$ 且 $p\leq N_h$ |
-| GQA/MQA | KV 布局复杂或需要复制 | KV Head 数可能小于 UP Degree |
-| Decode | AllToAll 难以摊薄 | 新 Query 长度通常为 1，序列维度缺少可切分工作 |
-| 跨节点扩展 | 带宽下降、拥塞增大 | AllToAll 比节点内 NVSwitch 更依赖拓扑 |
-
-因此，UP 更适合训练、长 Prompt Prefill 和大规模图像/视频 token。部署时常把 Ulysses 放在节点内，并与节点间 Ring Attention 组合。
-
----
+* **AllToAll 尾延迟**：每个 Rank 都要向多个目标 Rank 发送不同数据，完成时间受最拥塞链路和最慢 Rank 影响；
+* **Pack / Unpack**：Head 与序列布局转换会增加 HBM 读写、临时 Buffer 和 Kernel Launch；
+* **Head 数限制**：UP Degree 受 Q/KV Head 数和可整除性约束；
