@@ -8,24 +8,6 @@
 
 > MMDiT 是“两套模态专属 Transformer 参数 + 一次联合 Attention”，而不是普通 DiT 后面再附加一个 Cross-Attention。
 
-## 导航
-
-* [MMDiT 相比 DiT 改了什么](#mmdit-相比-dit-改了什么)
-* [双流输入与条件路径](#双流输入与条件路径)
-* [Joint Attention 的精确计算过程](#joint-attention-的精确计算过程)
-* [一个 MMDiT Block 的执行流程](#一个-mmdit-block-的执行流程)
-* [张量形状与计算量](#张量形状与计算量)
-* [为什么没有 LLM 式 KV Cache](#为什么没有-llm-式-kv-cache)
-* [推理端到端路径](#推理端到端路径)
-* [算子与内核视角](#算子与内核视角)
-* [显存分析](#显存分析)
-* [并行策略与通信量](#并行策略与通信量)
-* [主要性能瓶颈](#主要性能瓶颈)
-* [Profiling 与优化顺序](#profiling-与优化顺序)
-* [实现映射与容易踩坑的地方](#实现映射与容易踩坑的地方)
-
----
-
 ## MMDiT 相比 DiT 改了什么
 
 原始 DiT 通常只有图像 latent token 主干。类别或全局条件通过 adaLN 等方式注入；文本条件 DiT 也常使用“图像 Self-Attention + 图像查询文本的 Cross-Attention”。
@@ -308,30 +290,3 @@ $$z_t\rightarrow z_{t-1}$$
 文本编码器完成后还可以被 Offload；但这不等于 MMDiT 内部文本分支可以被删除或缓存。
 
 ---
-
-## 总结
-
-MMDiT 相比 DiT 最重要的变化不是扩散公式，而是条件交互结构：
-
-```text
-modality-specific projections and MLPs
-                +
-joint text-image attention
-                +
-bidirectional hidden-state updates
-```
-
-对推理 Infra 工程师，最需要记住五点：
-
-1. Joint Attention 的有效序列长度是 $N_i+N_t$，高分辨率下计算呈二次增长；
-2. 两种模态权重不同，QKV 只能各自融合，不能改成共享 Projection；
-3. 文本流会被当前图像和 timestep 更新，不能使用 LLM 式跨 step KV Cache；
-4. 多 GPU 通信字节数由联合 hidden state 决定，但双流可能增加 Collective 次数和 Layout 开销；
-5. 优化应同时观察 Joint Attention、大图像 GEMM、小文本 GEMM、Pack/Split 和通信，而不是只看总 FLOPs。
-
-## 参考资料
-
-* [Scaling Rectified Flow Transformers for High-Resolution Image Synthesis](https://arxiv.org/abs/2403.03206)
-* [Diffusers SD3Transformer2DModel](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/transformers/transformer_sd3.py)
-* [Diffusers JointTransformerBlock](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention.py)
-* [Diffusers Stable Diffusion 3 Pipeline](https://huggingface.co/docs/diffusers/main/api/pipelines/stable_diffusion/stable_diffusion_3)

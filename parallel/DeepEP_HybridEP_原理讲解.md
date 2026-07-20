@@ -1,521 +1,417 @@
-# DeepEP 原理深度讲解 & Hybrid EP 为何能省 SM
+# DeepEP 与 HybridEP
 
-## 0. 一句话直觉
+DeepEP 是面向 MoE Expert Parallelism 的通信库。EP 决定“哪些 token 应该去哪些 Experts”，DeepEP 则优化这些 token 在 GPU、NVLink 和 RDMA 网络上如何被重排、发送与收回。
 
-**经典集合通信**像「固定时刻表的公交」：谁发给谁、发多少，在 launch 前就定死了。  
-**MoE 的 Expert Parallelism**像「打车」：每个 token 的目的地由 router **每层现场决定**，流量稀疏、不规则、跨节点。
-
-DeepEP 做的事，不是再包一层 NCCL AllToAll，而是把 MoE 的两个原语——**Dispatch（送 token 去见专家）** 与 **Combine（把专家输出加权送回家）**——做成：
-
-1. **感知拓扑**的 GPU 侧通信内核（NVLink 域 vs RDMA 域不对称）；
-2. **可显式预算 SM 数量**的通信消费者（把通信当成「占多少 SM 的租户」，而不是黑盒）；
-3. 与 DualPipe / 双 microbatch / 解码 overlap **共设计**的 overlap 语义（含历史 LL 的 0-SM hook）。
-
-Hybrid-EP（以及 DeepEP 的 hybrid mode）则进一步回答：**怎样用尽量少的 SM，把 NIC + NVLink 打满**——因为一旦链路打满，多占 SM 只会从 GEMM 手里抢算力。
+本文假设已经理解 [EP](./EP.md) 的 Router、Dispatch、Grouped GEMM 和 Combine，只讨论 DeepEP 在通信实现上的不同。
 
 ---
 
-## 1. 问题背景：MoE EP 为什么特别难
+## DeepEP 优化了什么
 
-### 1.1 MoE 层的数据依赖通信
-
-进入 MoE 层时，每个 rank 通常持有：
-
-- 激活：`(B_i, H)`
-- 路由后：`topk_idx / topk_weights`，形状约 `(B_i, K)`
-
-专家分布在 EP 域的各个 GPU 上。token 必须去「见」它被路由到的专家，跑完 FFN 再回来做加权归约。
-
-这与 TP AllReduce / SP AllGather / 静态 AllToAll 的本质差别：
-
-| 维度 | 静态集体通信 | MoE EP |
-|------|-------------|--------|
-| 目的地 | 架构决定、步步相同 | Router 数据依赖、每层变 |
-| 体积 | 可预知 | 热专家/冷专家导致极不均匀 |
-| 拓扑利用 | 往往扁平 mesh | NVLink ≫ RDMA，应用层次化 |
-| 与计算重叠 | 常见 | 训练要 DualPipe；解码几乎无计算可藏，要低延迟路径 |
-
-DeepSeek-V3 一类细粒度 MoE（大量专家、topk 激活）会把 EP 通信推到墙钟时间的主要矛盾；未优化时通信占比可超过一半。
-
-### 1.2 Infra 视角要优化的「三重约束」
-
-1. **算法带宽**：有效 payload / 墙钟（含本地转发流量时的 logical BW）；
-2. **SM 税**：通信内核占用多少 SM——重叠时，这些 SM 不能给 grouped GEMM；
-3. **HBM / 延迟权衡**：紧凑布局省显存但要协调 RTT；固定矩形省 RTT 但浪费显存。
-
-DeepEP 的设计轴，基本就是在这三者之间做可配置的工程折中。
-
----
-
-## 2. DeepEP 是什么
-
-**DeepEP（DeepEveryParallel）** 是 DeepSeek 开源的高性能通信库，核心是 MoE **专家并行**的 GPU kernel：
-
-- **Dispatch**：把 token 激活送到持有对应专家的 GPU；
-- **Combine**：把专家输出送回 token 归属 rank，并做（或配合做）**加权 reduce**；
-- 支持 **FP8 dispatch / BF16 combine** 等低精度在线传输；
-- 显式控制通信占用的 **SM 数量**；
-- V2 起统一为 `ElasticBuffer`，后端从 NVSHMEM 转向更轻的 **NCCL Gin**；并实验性提供 0-SM Engram / PP / CP 等原语。
-
-它不是「另一个 NCCL wrapper」，而是 **为不规则 MoE 流量定制的、GPU-initiated、拓扑感知的 all-to-all 实现**。
-
----
-
-## 3. 端到端数据路径（直觉图）
-
-```
-Attention / Router (local)
-        │  topk_idx, topk_weights
-        ▼
-┌─────────────── DISPATCH ───────────────┐
-│ 布局：HT=先计数再紧凑；LL=固定最坏矩形 │
-│ 打包：可选 FP8 量化                    │
-│ 传输：同节点 → NVLink                  │
-│       跨节点 → RDMA 到同 rail 对端，   │
-│               再 NVLink 转发到目标 GPU │
-│ 输出：供 grouped GEMM 的布局           │
-└────────────────────────────────────────┘
-        │
-        ▼
-   Expert FFN (grouped GEMM)
-        │
-        ▼
-┌─────────────── COMBINE ────────────────┐
-│ 反布局 → 沿原路径送回                   │
-│ 对每个 token 的 K 路输出做加权求和      │
-└────────────────────────────────────────┘
-        │
-        ▼
-下一层 / Residual
-```
-
-### 3.1 层次化转发（Hybrid Mode 的通信拓扑含义）
-
-在多节点、每节点多卡、每卡一条 NIC 的常见 rail 拓扑上：
-
-> Token 要去 **节点 B 的 GPU j** 时，典型路径是：  
-> **本节点 GPU i → RDMA → 节点 B 的 GPU i（同 rail）→ NVLink → 节点 B 的 GPU j**。
-
-直觉：
-
-- 每张 NIC 只跟「对轨」的远程 GPU 说话，**连接数 / QP 数可控**，避免 full mesh 爆炸；
-- IB 与 NVLink **可以流水重叠**：远端 rail peer 一边收 IB，一边往机内转发；
-- DeepSeek-V3 的 **group-limited gating**（限制 token 跨节点的节点数）与此共设计，让跨节点扇出可管。
-
-这就是「Hybrid」一词在 DeepSeek/DeepEP 语境下的第一层含义：**NVLink 域 + RDMA 域的层次化混合**，而不是扁平 GPU 全互连。
-
----
-
-## 4. 两条内核哲学：High-Throughput vs Low-Latency
-
-这是理解 DeepEP 最关键的分叉。一句话：
-
-> **HT 花一次协调 RTT，换紧凑显存；LL 花最坏情况显存，换掉那次 RTT。**
-
-### 4.1 High-Throughput（训练 / Prefill）：先问再送
-
-**为什么需要「问」？**  
-紧凑接收缓冲 `(N_recv, H)` 的大小，以及每个 token 写入的 offset，都依赖「别人要给我多少」。这些在本机 router 跑完前全局未知。
-
-**步骤：**
-
-1. **Count exchange**：每个 rank 已知自己发给每个 peer 的 token 数（整数，极小）；按同样拓扑做一次协调（跨节点 RDMA + 机内 NVLink）。
-2. **Prefix-sum layout**：收到各 source 的 count 后，前缀和给出每个 source 块的起始 offset → 紧凑 buffer。
-3. **经预注册队列发送**：RDMA 只能写进预先注册的 MR；紧凑 buffer 是本步才定大小的，所以发送方写入 **固定大小的 pre-registered queue**，接收方再 drain 到紧凑 buffer。
-4. **按 source 到达 → 本地 permute 成按 expert**：DeepEP 常把「by-source」交给框架再排成「by-expert」喂 grouped GEMM。
-5. **Combine** 复用 dispatch 的 handle / 路由信息，**不必再做一轮 count RTT**。
-
-适合：batch 大、GEMM 算得动、可以用 DualPipe / 双 microbatch **藏住协调延迟**；显存紧（KV cache 珍贵）的服务侧 prefill。
-
-### 4.2 Low-Latency（Decode）：不问直接送
-
-Decode 时每 rank 往往只有很少 token，协调 RTT 几乎藏不住，且动态 shape 不利于 CUDA Graph。
-
-**做法：**
-
-1. 预先为每个 `(source_rank, local_expert)` 留 **私有矩形槽位**；
-2. 写地址变成闭式公式，例如：
+普通 EP Dispatcher 通常把数据重排和通信拆成多个独立算子：
 
 ```text
-addr = base + (e * R + r) * chunk + slot
+Router
+  │
+  ▼
+Token Permute / Pack
+  │
+  ▼
+AllToAllV
+  │
+  ▼
+按本地 Expert 再次重排
+  │
+  ▼
+Grouped GEMM
+  │
+  ▼
+反向重排 + AllToAllV + Unpermute
 ```
 
-3. **第一件事就是数据 RDMA**，没有 count RTT；
-4. 发送方写完 payload 后，在有序通道上写 **count/flag**（空值可区分「未到达」与「发了 0 个」）；接收方看 flag 得知有效行数；
-5. 默认 **FP8 在线 dispatch、BF16 combine**（combine 要累加，精度更敏感）；
-6. 缓冲是 `E_local × R × chunk × H` 量级，**大多是空洞**——用显存买延迟。
+这种实现语义清晰，但会产生：
 
-V1 的 LL 还有著名的 **recv hook**：发送侧 post 之后，NIC/IBGDA 可继续推进；hook 等待时 **不必让 SM 空转 polling**，从而在 overlap 窗口内接近 **0 SM occupation**（V2 说明已不再支持「0 SM RDMA LL」这一旧语义，重叠模型有变化）。
+* 多次 HBM 读写和临时 Buffer；
+* 多个 Permute、Pack 和 Collective Kernel；
+* CPU、通信 Stream 与计算 Stream 之间的同步；
+* 对 NVLink 和 RDMA 差异利用不足的扁平通信。
 
----
+DeepEP 将 EP 的通信抽象为两个专用原语：
 
-## 5. 核心机制拆解（通算融合视角）
+* **Dispatch**：根据 Top-$k$ 结果重排 token，并发送到目标 Expert Rank；
+* **Combine**：把 Expert 输出送回原 Rank，并恢复原 token 布局。
 
-### 5.1 进程内：NVLink
-
-- V1：定制 kernel / NVSHMEM LSA 等；
-- Hybrid-EP / 新 HT：大量用 **TMA（Tensor Memory Accelerator）** 做 G↔S、跨 GPU 拷贝——拷贝引擎式异步搬运，warp 主要发 descriptor / fence，而不是手写 `LD/ST` 搬字节。
-
-### 5.2 跨节点：GPU-initiated RDMA
-
-| 技术 | 角色 |
-|------|------|
-| **GPUDirect RDMA** | NIC DMA 直达 GPU HBM，无 bounce buffer |
-| **IBGDA** | GPU 映射 NIC UAR，在 device 侧 post WR（V1 / Hybrid-EP） |
-| **NVSHMEM** | V1 主后端；GPU↔HCA 映射关键 |
-| **NCCL Gin / GDAKI** | V2 默认：更轻、可复用 NCCL communicator |
-
-要点：通信进度尽量 **不经过 CPU proxy**，否则 RTT 与 SM/Host 调度都会变差。
-
-### 5.3 Buffer 与打包
-
-- **V1 `Buffer`**：`num_nvl_bytes` / `num_rdma_bytes` 分离；HT 用 queue（省内存，有死锁边界）；LL 用大固定 RDMA 区域。
-- **V2 `ElasticBuffer`**：HT+LL 统一接口；缓冲往往更大；**解析计算 SM/QP**（`get_theoretical_num_sms`），不再靠盲目扫参。
-- 在线 **FP8**：直接砍线带宽与延迟（尤其 LL）。
-
-### 5.4 通信为什么会占用 SM？
-
-很多人以为「有 NIC / Copy Engine 就不占 SM」。对 MoE EP 不成立，因为至少有人要做：
-
-- 按 routing map **筛选/打包/量化** token；
-- 维护 shared-memory FIFO、阶段同步；
-- post RDMA、poll CQ / 等 flag；
-- Combine 上的 **分层 reduce**（BF16 累加往往在 CUDA Core 上）。
-
-因此 DeepEP 把通信做成 **显式 SM 预算的持久化/多 warp 内核**：例如 V1 `Buffer.set_num_sms(24)`；V2 `num_sms=` / 理论值。  
-目标不是「通信 SM 越多越好」，而是 **刚好打满 NVLink/RDMA 瓶颈，其余 SM 全部留给 GEMM**。
-
-### 5.5 计算–通信重叠的几种形态
-
-1. **流重叠**：`async_with_compute_stream` / `EventOverlap`；
-2. **DualPipe（训练）**：双向 PP，把 EP A2A 藏进另一侧计算；
-3. **双 microbatch decode**：batch0 在飞，batch1 做 Attention/MoE；
-4. **Hybrid-EP 细粒度 chunk pipeline**：64/128 token 一切，把动态路由与 RDMA RTT **藏进流水线气泡**，使 EP 算法带宽逼近静态 AllToAll。
-
-对融合工程师：评估指标应是 **(算法带宽, SM 数, 端到端 GEMM 有效占用)** 三元组，而不是单看微基准 GB/s。
+它的主要收益不是改变 Router 或 Expert MLP，而是融合数据重排与通信、感知硬件拓扑、支持低精度传输，并显式控制通信占用的 SM。
 
 ---
 
-## 6. DeepEP V1 → V2：省 SM 的产品化路径
+## Dispatch 与 Combine
 
-V2 相对 V1 的关键变化（与本文主题直接相关）：
+### Dispatch
 
-| 项目 | V1 | V2 |
-|------|----|----|
-| API | HT/LL 分离，`Buffer` | 统一 `ElasticBuffer` |
-| 后端 | NVSHMEM + IBGDA | **NCCL Gin**（更轻） |
-| SM | 经验调参，常过配（如 24） | **解析资源分配**，V3-like 可到 **4–6 SM** |
-| 规模 | 较小 | 宣称可达 EP2048 |
-| 性能 | 基线 | 峰值可达约 **1.3×**，SM 可省至约 **1/4** |
-| LL 0-SM RDMA | hook 支持 | **不再支持**旧 0-SM LL |
-
-解析分配的直觉：先用拓扑 + `ibstat`/环境变量估计 **RDMA/NVLink 瓶颈带宽**，再反推「打满该瓶颈最少需要多少 SM / QP」。  
-过配 SM：微基准可能略好看，但 DualPipe 下会 **直接偷走计算 SM**。
-
----
-
-## 7. Hybrid EP：两个容易混的概念
-
-实践中「Hybrid EP」常指两件相关但不同的事：
-
-### 7.1 DeepEP 的 Hybrid Mode（拓扑语义）
-
-- **Hybrid**：层次化 NVLink + RDMA（rail 转发）；
-- **Direct**：更接近扁平/直连风格的跨 GPU 通信。
-
-V2 两者仍都支持。Hybrid 适合 **机内 NVLink ≫ 机间 RDMA** 的集群（H800/H100 + CX7 等）。
-
-### 7.2 NVIDIA Hybrid-EP（内核实现语义）
-
-[DeepEP `hybrid-ep` 分支](https://github.com/deepseek-ai/DeepEP/tree/hybrid-ep) / Megatron `moe_flex_dispatcher_backend=hybridep`：
-
-- 用 **TMA** 做 NVLink 域数据搬运；
-- 用 **IBGDA / DOCA / NIXL** 等做 RDMA；
-- **Warp-specialized 多级 pipeline**；
-- 目标：**极少 SM 打满混合网络**，并支持更细粒度的通算重叠。
-
-Megatron 侧常见配置直觉：
+每个 Rank 向 DeepEP 提供：
 
 ```text
---moe-token-dispatcher-type flex --moe-flex-dispatcher-backend deepep   # 或 hybridep
-# 再调 --moe-deepep-num-sms / --moe-hybridep-num-sms
+Hidden States
+Top-k Expert Ids
+Top-k Weights
 ```
 
-下文「为什么 Hybrid EP 能省 SM」主要针对 **7.2 的内核实现**，并兼容 7.1 的层次化拓扑（二者叠加才是完整故事）。
+Dispatch 需要完成三件事：
+
+1. 根据 Expert Id 计算目标 Rank 和目标位置；
+2. 将 Routed Tokens 发送到目标 Rank；
+3. 生成供本地 Experts 使用的接收布局与 token counts。
+
+概念上，第 $r$ 个源 Rank 仍然发送：
+
+$$X_{r\rightarrow j}$$
+
+给第 $j$ 个目标 Rank。但 DeepEP 会尽量在 fused kernel 内完成 Permute、Pack 和跨 Rank 传输，避免把每一步都物化为独立的大 Buffer。
+
+不同框架对 Expert-Contiguous Layout 的接口边界略有差异：有的直接从 Dispatch 得到按 Expert 排列的输入，有的还会调用一个轻量重排步骤。核心目标都是减少中间搬运，而不是改变 EP 的路由语义。
 
 ---
 
-## 8. Hybrid-EP 内核解剖：一个 SM 就是一条流水线
+### Expert 计算边界
 
-NVIDIA 描述的核心抽象：
+Dispatch 通常返回：
 
-> **每个 CUDA block ≈ 占用一个 SM，作为一条独立数据通道；block 内不同 warp group 负责不同流水级；不同 block 处理不同 data chunk，block 间无需同步。**
+* 接收到的 Routed Token Hidden States；
+* 每个本地 Expert 的 token 数；
+* 重排后的 Expert Id 和 Router Weight；
+* 一个记录路由与反向映射的 Handle；
+* 用于异步依赖管理的 Event。
 
-### 8.1 Dispatch 流水线（单 block 内）
+每个 Expert 的 token 数决定 Grouped GEMM 的实际 $M$ 维：
 
-典型 warp group 分工（概念模型）：
+$$X_e\in\mathbb{R}^{T_e\times H}$$
 
-| Warp Group | 职责 |
-|------------|------|
-| **G2S** | 用 TMA：本卡（及同 rail 远端已到本卡的）token → SM 内 **shared memory FIFO** |
-| **RDMA** | 用 IBGDA：把需要跨节点的数据送到 **同 rail 远程 GPU** |
-| **S2G / NVLink** | 用 TMA/LSA：从 SM FIFO 写到 **本节点所有目标 GPU** 的输出 buffer（含本卡） |
-
-数据按 routing map **只搬需要的 token**；chunk 粒度（如 64 tokens）让「等路由元数据 / 等 RDMA RTT」的气泡被后续 chunk 填满。
-
-直觉类比：
-
-> 旧式 EP：很多工人 **亲手搬箱子**（大量 SM 做 LD/ST）。  
-> Hybrid-EP：少数调度员操作 **传送带（TMA）+ 码头吊车（IBGDA）**，工人很少，吞吐由传送带和吊车决定。
-
-### 8.2 Combine 流水线：必须分层 Reduce
-
-Combine 要对 K 路专家输出做高精度累加，累加目前主要在 **SM 的 CUDA Core** 上完成，因此 Hybrid-EP 采用 **层次化 reduce**：
-
-1. **机内**相关 warp 先做节点内部分累加；
-2. **RDMA warp** 把部分和送到跨节点同 rail GPU；
-3. **跨节点相关 warp** 完成全局累加，得到最终结果。
-
-单节点时，机内累加路径可直接落到「跨节点」那组 warp 的角色上。  
-路径上仍是：G2S FIFO → Reduction warp → S2G FIFO → TMA 写回 HBM。
-
-层次化 reduce 的副作用：**跨节点流量从「原始 K 路全量」变成「部分和」**，既省带宽，也减少 RDMA 侧需要驱动的 outstanding 工作——间接再省 SM。
+DeepEP 本身负责通信和布局，不负责解决 Expert 负载不均衡，也不等同于 Grouped GEMM。它只需要把数据交付成 Expert Kernel 能消费的布局。
 
 ---
 
-## 9. 深入：为什么 Hybrid EP 可以省 SM
+### Combine
 
-下面按「因果链」展开，而不是只报「4–16 SM 就打满」。
-
-### 9.1 先搞清：SM 在通信里到底在干什么
-
-GPU 上「搬数据」有几类执行者：
-
-1. **CUDA Core / Tensor Core 上的 warp**：执行 load/store、打包、reduce、轮询；
-2. **TMA / Copy Engine**：异步批量拷贝，warp 只发命令；
-3. **NIC DMA（GDR）**：HBM↔网络，不消耗「算力指令」，但需要有人 **post/doorbell/completion**。
-
-naive EP 之所以吃很多 SM，是因为把 (1) 当成了主路径：  
-**字节搬运的吞吐 ≈ 活跃 warp 数 × 每 warp 有效带宽**。要喂饱 NVLink/IB，就得堆很多 warp → 很多 SM。
-
-Hybrid-EP 的策略是：**把 (1) 缩到「控制面」**，把 (2)(3) 变成「数据面」**。控制面的 SM 需求远低于「手搬字节」的数据面。
-
-### 9.2 机制一：TMA 卸载字节搬运（最大头的 SM 节省）
-
-手写 `LD.global / ST.global` 或甚至 `__ldg`：
-
-- 每个 16B/32B 都要占 issue 槽与寄存器；
-- 要靠大量 warp 做延迟隐藏；
-- L1/L2 行为还要小心（DeepEP 里常见激进 PTX，如 `L1::no_allocate` 处理 RDMA 可见易失数据）。
-
-TMA：
-
-- warp 写入拷贝描述符后可以去做别的事或等待 barrier；
-- 大批连续/张量布局搬运由硬件异步完成；
-- **同样 GB/s，活跃 warp / SM 数断崖下降**。
-
-因此 Hybrid-EP 在 **机内 NVLink 扇出**（dispatch 的 S2G、把 token 写到节点内多 GPU）上特别省 SM：这恰恰是 naive 实现最爱堆 SM 的地方。
-
-### 9.3 机制二：层次化拓扑缩小 RDMA 扇出（控制面变瘦）
-
-Flat all-to-all：每个 GPU 可能对 **O(EP_world)** 个 peer 有 outstanding。
-
-Hybrid：
-
-- RDMA 只打 **rail peer ≈ O(节点数)** 量级；
-- 机内扇出交给 NVLink/TMA。
-
-后果：
-
-- QP / WR / CQ poll 的并发度下降；
-- 卡在「等 NIC」的 warp 变少；
-- 同一条 RDMA 流水线用 **更少 SM** 就能把 CX7 打满（NVIDIA 数据：四机 H100 场景约 **4 SM** 就接近 NIC 峰值）。
-
-这与 DeepSeek「group-limited gating + rail 转发」是同一设计哲学：**用算法与拓扑约束，减少设备侧控制复杂度**。
-
-### 9.4 机制三：Warp Specialization + SM 内 FIFO = 用流水深度换 SM 宽度
-
-一个 SM 上同时跑 G2S / RDMA / S2G（及 combine 的 reduce）：
-
-- 形成 **producer–consumer 流水线**；
-- shared memory FIFO 解耦各级速率；
-- **深度优先于宽度**：先把一条通道的流水填满，再横向加 block（SM）。
-
-经验曲线通常是：
-
-- 1→4 SM：带宽陡升（填满流水与 NIC）；
-- 4→8 SM：可能仍有收益；
-- 8→16 SM：在 RDMA 瓶颈拓扑上经常 **平台期**——再加 SM 几乎不涨 GB/s，只抢 GEMM。
-
-Hybrid-EP 的产品目标正是：**尽快到达「硬件膝盖」左侧最小 SM 点**。
-
-### 9.5 机制四：瓶颈在链路，不在 ALU —— 多 SM 收益为负
-
-H100 约 132 SM。若通信占 24 SM，重叠窗口里 GEMM 最多用 ~108；若通信用 4–8 SM，GEMM 多出十几到二十个 SM。
-
-关键不等式：
+Expert 计算完成后，Combine 使用 Dispatch 保存的 Handle 反向执行：
 
 ```text
-若 Bandwidth(SM) 在 N* 处已饱和物理链路，
-则 ∀ N > N*:  ΔBW ≈ 0，但 ΔCompute_SMs = -(N - N*) < 0
-⇒ 端到端变慢或 DualPipe 气泡变大
+Expert-Contiguous Outputs
+        │
+        ▼
+根据 Handle 找回 Source Rank / Token Index
+        │
+        ▼
+跨 Rank 返回 Expert Outputs
+        │
+        ▼
+恢复 Token-Owned Layout
+        │
+        ▼
+合并 Top-k Expert Outputs
 ```
 
-所以「省 SM」不是微基准炫技，而是 **通算融合的一阶优化目标**：通信是租户，GEMM 是房东。
+对原 token $t$，结果仍然是：
 
-### 9.6 机制五：细粒度 Chunk 流式化，减少「屏障式 SM 空转」
+$$Y_t=\sum_{e\in\mathcal{E}(t)}w_{t,e}Y_{t,e}$$
 
-若必须等「全局 layout 完全就绪」再开大拷贝：
-
-- 大量 SM 会在 barrier / 等 count 上空转；
-- 或被迫用更多 SM 去做无意义的忙等掩盖。
-
-Chunk pipeline：
-
-- 路由元数据与小块 payload 交替推进；
-- RDMA RTT 被后续 chunk 掩盖；
-- 动态 MoE 的不规则性被「切成接近静态 AllToAll 的流」。
-
-NVIDIA 原文要点：通过 fine-grained chunk streaming，使 EP 带宽 **可比高度优化的静态 all-to-all**——同时保持低 SM。
-
-### 9.7 机制六：Combine 层次化 Reduce 降低跨域工作量
-
-跨节点若回传全部 expert 输出再在 home 累加，RDMA 字节与控制复杂度都高。  
-机内先 reduce 再跨节点，相当于 **在高带宽域做归约，在低带宽域传摘要**。
-
-这同时：
-
-- 降低 RDMA 负载 → 更少 RDMA warp 压力；
-- 把一部分累加留在已经占用的那几个通信 SM 上，而不是另开大规模 reduce kernel 抢 SM。
-
-### 9.8 机制七：与 DeepEP V2 解析 SM 分配同向
-
-Hybrid-EP 的「少 SM 打满」与 DeepEP V2 的 `get_theoretical_num_sms` 是同一思想的两端：
-
-- Hybrid-EP：用 TMA+流水线 **把 N\*** 往左推（同样拓扑，膝盖更早到来）；
-- DeepEP V2：用带宽模型 **算准 N\***，避免过配。
-
-公开数字锚点（量级，非你集群保证值）：
-
-| 场景 | 大约 SM | 现象 |
-|------|---------|------|
-| Hybrid-EP，单机 H100 NVLink | ~8 | 填满 NVLink |
-| Hybrid-EP，4×DGX H100 + CX7 | ~4 | 接近 NIC 峰值 |
-| Hybrid-EP，GB200 NVL36 | ~16 | 填满大规模 NVLink 域 |
-| DeepEP V1，V3-like 训练 | ~24 | 经验过配常见 |
-| DeepEP V2，V3-like | **4–6** | 性能持平或更好 |
-| DeepEP V2，SM90 EP 8×2 | 12 | RDMA ~90 GB/s logical |
-
-Megatron 实测量级（Grace Blackwell，相对基线 dispatcher）：DeepSeek-V3 上 Hybrid-EP 相对 DeepEP 约 **+14%** TFLOPS/GPU 等——收益来自 **更低通信 SM 税 + 更高有效带宽**，而不只是单一因素。
-
-### 9.9 反例：什么情况下「Hybrid / 少 SM」会失效
-
-1. **Rail / HCA 映射错误**：流量跨轨拥塞，NIC 打不满，看起来像「要更多 SM」，实际是拓扑问题；
-2. **ACP bonding 等导致 `ibstat` 带宽读半**：V2 解析 SM 算少，需 `EP_RDMA_GBS` 等手动校正；
-3. **纯 NVLink 域、追求绝对峰值**：可能故意用更多 SM（V2 表：SM100 EP8 峰值 64 SM vs 最小 24 SM）——那是 **吞吐微基准** 目标，不是 DualPipe 目标；
-4. **Combine 累加极重、chunk 过小**：控制开销占比上升，N\* 右移；
-5. **误用 HT/LL**：decode 走 HT 协调、prefill 走巨大 LL 矩形，都会让「省 SM」的故事崩盘。
+Handle 复用了 Dispatch 已计算的路由、offset 和反向索引，因此 Combine 不需要重新推导一遍 token 去向。
 
 ---
 
-## 10. 与传统方案对比（选型直觉）
+### 一组 DeepEP 的完整过程
 
-| 方案 | 模式 | 相对 DeepEP/Hybrid-EP |
-|------|------|----------------------|
-| NCCL AllToAll + permute | 主机/通用集体 | 易用；不规则 MoE、FP8 融合、SM 预算弱 |
-| Megatron AllGather dispatcher | 聚集到本地 | 小 EP/大 topk 机内尚可；宽 EP 爆内存带宽 |
-| Megatron AllToAll | 标准 A2A | 基线；缺域感知与 SM 精细控制 |
-| Flex + DeepEP | 设备侧 EP | 跨节点 EP、FP8、SM API；HT 仍非零 SM |
-| Flex + HybridEP | TMA+IBGDA HT | NVL72/GB200 等上少 SM；部署更重、吃拓扑 |
-| Tutel / FasterMoE | 早期 MoE 系统优化 | 调度/容量强；非同一套 GPU-initiated RDMA+hook 栈 |
+```text
+Router Outputs
+        │
+        ▼
+DeepEP Dispatch
+Permute + Pack + NVLink/RDMA Communication
+        │
+        ▼
+Routed Tokens + Tokens per Expert + Handle
+        │
+        ▼
+Grouped Expert GEMM
+        │
+        ▼
+DeepEP Combine
+Communication + Reduce + Unpermute
+        │
+        ▼
+原 Rank、原 Token 顺序的输出
+```
 
-融合工程师的差异化检查清单：
-
-1. 有没有 **SM-number API**？
-2. 是否 **NVLink↔RDMA 融合转发**？
-3. 是否 **FP8 dispatch**？
-4. decode 路径如何重叠（hook / graph / cached handle）？
-5. 是否与 **routing 约束（group-limited）** 共设计？
+训练反向中，Dispatch 的反向在通信语义上对应 Combine，Combine 的反向对应 Dispatch。
 
 ---
 
-## 11. 使用形态速览（便于对照源码）
+## High-Throughput 与 Low-Latency
 
-### 11.1 DeepEP V2 `ElasticBuffer`
+DeepEP 同时面向两种差异很大的负载。V2 使用统一的 `ElasticBuffer` 接口，但两种性能目标仍然存在。
+
+### High-Throughput
+
+High-Throughput 路径主要用于训练和 Prefill：
+
+* token 多，消息较大；
+* 重点是持续带宽和紧凑的 Expert 输入布局；
+* 可以用异步 Event、多个 Microbatch 或流水调度隐藏通信；
+* Pack、量化和通信的固定开销容易摊薄。
+
+此时应优先优化单位时间处理的有效 Routed Token 数，而不是单次 Collective 的最短延迟。
+
+### Low-Latency
+
+Low-Latency 路径主要用于 Decode：
+
+* 每步 token 少，消息很小；
+* 固定启动延迟、元数据处理和同步占比更高；
+* 通信很难被同一请求的 Expert GEMM 完全隐藏；
+* Buffer 上界、稳定地址和可复用 Handle 对 CUDA Graph 更重要。
+
+V2 允许在适用时缓存并复用路由 Handle，减少重复的布局计算与 CPU 同步。但只有路由结果确实不变时才能复用，不能跨不同 token 强行沿用旧路由。
+
+因此，High-Throughput 与 Low-Latency 的区别不是两套 EP 数学公式，而是大消息带宽、Buffer 紧凑度、启动延迟和可重叠性之间的不同取舍。
+
+---
+
+## DeepEP 的通信量
+
+DeepEP 不改变 Top-$k$ Routing 产生的逻辑 Routed Token 数。设：
+
+* 每 Rank 初始有 $T_{\text{local}}$ 个 token；
+* 每个 token 选择 $k$ 个 Experts；
+* Hidden Size 为 $H$；
+* EP Degree 为 $p$；
+* Dispatch 和 Combine 每个元素分别占 $b_d$、$b_c$ 字节。
+
+在 Expert 均匀放置且路由均匀时，DeepEP 的理想每 Rank Payload 发送量仍为：
+
+$$V_{\text{DeepEP}}\approx\frac{p-1}{p}kT_{\text{local}}H(b_d+b_c)$$
+
+若 Dispatch 和 Combine 都使用相同精度 $b$：
+
+$$V_{\text{DeepEP}}\approx2\frac{p-1}{p}kT_{\text{local}}Hb$$
+
+这与普通 EP 的逻辑通信量一致。DeepEP 的主要优化来自：
+
+* 减少额外 Permute 和中间 Buffer 的 HBM 流量；
+* 将通信映射到更合适的 NVLink / RDMA 路径；
+* 使用 FP8 等低精度降低 Dispatch Payload；
+* 让通信与独立计算重叠；
+* 用更少通信 SM 达到链路饱和。
+
+公式不包含 Expert Id、Router Weight、Scale、Offset 和 Count 等元数据。FP8 Dispatch 仍需要 Scale，因此实际字节数不能只按一个字节直接估算。
+
+还要区分两种带宽：
+
+* **Algorithm Bandwidth**：有效 Routed Payload 除以端到端通信时间；
+* **Bus Bandwidth**：NVLink 或 NIC 上实际传输的物理字节数除以时间。
+
+层次化转发会让同一 Payload 依次经过 RDMA 和 NVLink，因此 Algorithm Bandwidth 不能直接当作 NIC 的物理吞吐。
+
+---
+
+## NVLink 与 RDMA 的层次化通信
+
+节点内 NVLink/NVSwitch 和节点间 RDMA 的带宽、延迟和可连接规模差异很大。DeepEP 不把它们简单视为同一种链路，而是支持 Direct 与 Hybrid 两类拓扑模式。
+
+Hybrid Mode 的基本思想是：
+
+```text
+源 GPU
+  │
+  ├── 节点内目标：NVLink
+  │
+  └── 跨节点目标：RDMA 到目标节点
+                         │
+                         ▼
+                    节点内 NVLink 转发
+                         │
+                         ▼
+                     目标 Expert GPU
+```
+
+这样可以把跨节点通信集中到适合访问 NIC 的路径，再利用节点内高速互联完成本地分发，避免让每个 GPU 与所有远端 GPU 建立同等复杂的通信关系。
+
+Direct Mode 不采用相同的层次化转发假设，具体 Peer 映射取决于所使用的 DeepEP 版本。哪种模式更好取决于 GPU–NIC Affinity、NVLink Domain、Rail 映射、节点数量和消息大小，不能只根据 EP Degree 决定。
+
+层次化通信解决的是数据如何穿过不同硬件域，并不能消除热门 Expert。若 Router 让大量 token 聚集到同一 Rank，DeepEP 仍然要面对最大接收量和最慢 Expert。
+
+---
+
+## 为什么通信会占用 SM
+
+GPUDirect RDMA 可以让 NIC 直接读写 GPU HBM，但完整 EP 通信仍然需要 GPU 执行：
+
+* 解析 Routing Map；
+* Pack、量化和布局转换；
+* 发起或推进设备侧通信；
+* 轮询状态与维护同步；
+* 在 Combine 中执行 Top-$k$ Reduce；
+* 将结果写入最终 Buffer。
+
+因此通信 Kernel 会占用一部分 SM。假设 GPU 共有 $S$ 个 SM，其中 $s$ 个分配给通信，在理想重叠窗口中：
+
+$$T_{\text{overlap}}(s)\approx\max\left(T_{\text{comm}}(s),T_{\text{GEMM}}(S-s)\right)$$
+
+增加 $s$ 通常能先降低通信时间，但当 NVLink 或 RDMA 已经饱和后：
+
+$$\Delta T_{\text{comm}}\approx0$$
+
+继续增加通信 SM 只会减少 Grouped GEMM 可用的 SM，使端到端时间反而上升。
+
+DeepEP V2 根据拓扑、带宽和通信规模解析计算 SM 与 QP 数量。目标是找到接近链路饱和所需的最小 SM 数，而不是让通信微基准单独占满整张 GPU。
+
+---
+
+## DeepEP Hybrid Mode 与 HybridEP
+
+这两个名字相关，但不是同一个概念：
+
+* **DeepEP Hybrid Mode** 是 DeepEP V2 的一种拓扑模式，强调 NVLink 与 RDMA 的层次化组合；
+* **HybridEP** 是 NVIDIA 开发并接入 Megatron Core Flex Dispatcher 的优化后端，使用 TMA、IBGDA 和 Warp-Specialized Pipeline 降低通信 SM 占用。
+
+二者都利用混合互联，但前者描述 DeepEP 的拓扑选择，后者是一套具体的通信 Kernel 实现。
+
+---
+
+### HybridEP Dispatch Pipeline
+
+HybridEP 将每个 CUDA Block 视为一条独立数据通道，通常占用一个 SM。Block 内不同 Warp Group 负责不同流水级：
+
+```text
+G2S Warp Group
+从 HBM 读取本地或已到达的 token
+        │
+        ▼
+Shared-Memory FIFO
+        │
+        ├── RDMA Warp Group：使用 IBGDA 推进跨节点传输
+        │
+        └── S2G Warp Group：使用 TMA 写入节点内目标 GPU
+```
+
+不同 Blocks 处理不同 Token Chunks，不需要在 Blocks 之间频繁同步。Shared-Memory FIFO 解耦各流水级的速度，细粒度 Chunk 则用流水深度隐藏 RDMA 延迟。
+
+---
+
+### HybridEP 为什么能省 SM
+
+核心原因不是“通信不需要计算”，而是让少量 Warp 负责控制，让硬件数据通路负责大部分搬运：
+
+* **TMA** 异步执行规则的 HBM、Shared Memory 和 NVLink 数据搬运，减少 Warp 手写 Load/Store；
+* **IBGDA** 允许 GPU 侧直接推进 RDMA，减少 CPU Proxy 和 Host 调度；
+* **Warp Specialization** 让同一个 SM 内的 Warp Groups 分别负责读入、RDMA 和写出；
+* **Chunk Pipeline** 用连续小块填满流水，而不是用大量 SM 忙等一个全局阶段；
+* **层次化拓扑** 降低跨节点通信的连接和控制复杂度。
+
+Combine 比 Dispatch 多一步归约。HybridEP 会在数据路径中加入 Reduction Warp，对来自 Top-$k$ Experts 的输出进行分层累加，因此 Combine 的 SM 与精度成本通常不能完全等同于纯数据搬运。
+
+---
+
+## DeepEP V2 的接口边界
+
+DeepEP V2 的主要变化包括：
+
+* 使用统一的 `ElasticBuffer` 接口覆盖 High-Throughput 与 Low-Latency 场景；
+* 使用 NCCL Gin 作为主要设备侧通信后端；
+* 根据模型和拓扑解析计算 SM 与 QP 数；
+* 支持 Direct 与 Hybrid 模式；
+* 通过 JIT 编译通信 Kernel；
+* Buffer 占用可能高于 V1；
+* 不再支持 V1 的 0-SM RDMA Low-Latency EP 语义。
+
+典型调用关系可以简化为：
 
 ```python
-from deep_ep import ElasticBuffer
-
-buf = ElasticBuffer(
+buffer = ElasticBuffer(
     group,
-    num_max_tokens_per_rank=...,
-    hidden=...,
-    num_topk=...,
+    num_max_tokens_per_rank=max_tokens,
+    hidden=hidden,
+    num_topk=topk,
     use_fp8_dispatch=True,
 )
-num_sms = buf.get_theoretical_num_sms(num_experts, num_topk)
 
-recv_x, recv_topk_idx, recv_topk_weights, handle, event = buf.dispatch(
-    x, topk_idx=..., topk_weights=..., num_experts=...,
-    num_max_tokens_per_rank=..., num_sms=num_sms,
+num_sms = buffer.get_theoretical_num_sms(num_experts, topk)
+
+recv_x, recv_idx, recv_weight, handle, event = buffer.dispatch(
+    x,
+    topk_idx=topk_idx,
+    topk_weights=topk_weights,
+    num_experts=num_experts,
+    num_max_tokens_per_rank=max_tokens,
+    num_sms=num_sms,
     async_with_compute_stream=True,
 )
-# ... 独立计算 ...
+
 event.current_stream_wait()
+expert_out = grouped_expert_mlp(recv_x, handle.num_recv_tokens_per_expert_list)
 
-combined_x, _, event = buf.combine(
-    x, handle=handle, num_sms=num_sms,
+output, _, event = buffer.combine(
+    expert_out,
+    handle=handle,
+    num_sms=num_sms,
     async_with_compute_stream=True,
 )
 ```
 
-### 11.2 V1 LL hook（历史重要语义）
+这里最重要的对象是 Handle 和 Event：
 
-```python
-Buffer.set_num_sms(24)
-recv, count, handle, event, hook = buffer.low_latency_dispatch(
-    ..., return_recv_hook=True,
-)
-# 此处可跑另一 batch / GEMM；NIC 推进，通信侧接近 0 SM
-hook()  # 物化接收缓冲
+* Handle 保存 Combine 所需的路由和布局信息；
+* Event 表达通信 Stream 与计算 Stream 之间的依赖；
+* `num_sms` 决定通信与 GEMM 如何共享 GPU。
+
+实际 API 会随 DeepEP 版本变化，部署时应以所固定 Commit 的 README 和测试代码为准。
+
+---
+
+## DeepEP 的性能瓶颈
+
+在不考虑重叠时，一组 MoE Layer 可以粗略写成：
+
+$$
+T_{\text{MoE}}\approx
+T_{\text{metadata}}
++T_{\text{dispatch}}^{\text{collective}}
++\max_rT_{\text{expert},r}
++T_{\text{combine}}^{\text{collective}}.
+$$
+
+DeepEP 将 Permute、Pack 和部分 Reduce 融合进 Dispatch / Combine，因此这些时间已经包含在两个 Collective 中。通信与计算重叠后，真正需要关注的是：
+
+$$T_{\text{exposed comm}}=\max\left(0,T_{\text{comm}}-T_{\text{overlapped}}\right)$$
+
+主要瓶颈包括：
+
+* **路由不均衡**：最大 Receive Count 和最慢 Expert 仍会决定整个 EP Group 的长尾；
+* **通信 SM 过多**：Collective 更快，但 Grouped GEMM 因可用 SM 下降而变慢；
+* **通信 SM 过少**：Pack、Reduce 或设备侧通信无法喂满 NVLink / RDMA；
+* **拓扑错误**：GPU–NIC Affinity、Rail 或 Process Group 排布错误会形成热点链路；
+* **Decode 小消息**：元数据、Kernel Launch 和同步时间难以摊薄；
+* **Buffer 上界过大**：提高稳定性和 Graph 兼容性，但会挤占 Expert 权重与 KV Cache 显存；
+* **隐藏同步**：D2H Count、动态分配或错误的 Event 依赖会破坏异步重叠。
+
+如果 DeepEP 微基准带宽很高，但模型端到端没有提升，应优先检查通信 SM 是否挤占 GEMM、是否存在额外布局 Kernel，以及 Event 等待是否真的与独立计算重叠。
+
+---
+
+## 总结
+
+DeepEP 不改变 EP 的路由数学，也不能消除热门 Expert。它优化的是 Routed Tokens 的实际执行路径：
+
+```text
+更少中间搬运
++ 拓扑感知 NVLink / RDMA
++ 低精度 Payload
++ 显式 SM 预算
++ 通信计算重叠
+= 更低的 Exposed Communication Time
 ```
 
----
+High-Throughput 关注训练与 Prefill 的持续带宽，Low-Latency 关注 Decode 的启动延迟。DeepEP Hybrid Mode 是一种拓扑模式；HybridEP 则是使用 TMA、IBGDA 和 Warp Pipeline 的具体优化后端。
 
-## 12. 给通算融合工程师的设计原则（收束）
+评估 DeepEP 时，至少要同时观察 Algorithm Bandwidth、NIC/NVLink Bus Bandwidth、通信 SM 数、最大 Send/Receive Count、Grouped GEMM 时间和 Exposed Communication Time，不能只看单独的 AllToAll 微基准。
 
-1. **把 EP 当成带 SM 配额的租户**，不是黑盒 collective；配额目标是链路饱和点 N\*，不是越大越好。
-2. **Hybrid（层次化）优先于 flat**，当且仅当 NVLink ≫ RDMA；并用 gating 限制跨节点扇出。
-3. **HT vs LL 按 regime 切开**：训练/prefill 要紧凑与可藏 RTT；decode 要去 RTT、可 graph，接受显存空洞。
-4. **Hopper+ 上投资 TMA + GPU-initiated RDMA**：把通信从「算力搬砖」变成「控制面 + 硬件数据面」。
-5. **端到端以 GEMM 占用为准绳**：微基准 GB/s 上升但 SM 翻倍，在 DualPipe 下可能是负优化。
-6. **测量三元组**：算法带宽、通信 SM 数、重叠窗口内有效 TFLOPS；再辅以 NIC rail 正确性与拥塞控制策略。
-
----
-
-## 13. 术语速查
-
-| 术语 | 含义 |
-|------|------|
-| Dispatch / Combine | MoE EP 去程 / 回程原语 |
-| HT / LL | High-throughput / Low-latency 内核族 |
-| Hybrid Mode | NVLink+RDMA 层次化转发 |
-| Hybrid-EP | NVIDIA/DeepEP 分支：TMA+IBGDA 的少 SM 实现 |
-| IBGDA | GPU 直接访问 IB 门铃/队列的技术路径 |
-| TMA | Hopper+ 张量内存加速拷贝 |
-| Gin | NCCL 设备侧通信 API（DeepEP V2 后端）
-| Rail | 多机多卡下「同下标 GPU + 对应 NIC」对齐的路径 |
-| N\* | 打满物理链路所需的最小通信 SM 数 |
-| DualPipe | DeepSeek 双向流水，用于藏 EP 通信 |
-
----
-
-## 附录：假设与边界
-
-- 本文综合公开 README、NVIDIA Blog、社区解剖文章与 V3 报告中的设计叙述；**具体指令级实现以你使用的 DeepEP commit / Hybrid-EP 分支源码为准**。
-- 「Hybrid EP 省 SM」在工程上常同时受益于：**层次化拓扑 + TMA 卸载 + warp pipeline + 解析/经验选 N\***；单独强调任一机制都会不完整。
-- 日期与版本演进较快（V2、Gin、0-SM LL 语义变更）；落地前请核对当前仓库 News / legacy 文档。
-
----
-
-*文档生成位置：`/kl_infra_infer_intern/yangyixin03/DeepEP_HybridEP_原理讲解.md`*
+版本相关实现以 [DeepEP 官方仓库](https://github.com/deepseek-ai/DeepEP)、[HybridEP 分支](https://github.com/deepseek-ai/DeepEP/tree/hybrid-ep)和 [Megatron Core MoE 文档](https://docs.nvidia.com/megatron-core/developer-guide/latest/user-guide/features/moe.html)为准。
