@@ -544,6 +544,13 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
 
 ### 2.6 Epilogue：消费 TMEM，生产 D
 
+Epilogue 的任务：先等待 UMMA 完成，然后
+1. 将 256×256 TMEM 拆成 8 个 128×64 子块
+2. 128 个线程并行执行 TMEM FP32 → 寄存器 → BF16 CD SMEM
+3. 尽早释放 TMEM
+4. 一个线程发射 TMA Store
+5. 两个 CD stage 交替复用
+
 ```cpp
     } else if (warp_idx >= 4) {
         // ======================== EPILOGUE WARPS ========================
@@ -655,8 +662,8 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
                         tma_store_commit();
                     }
 
-                    tma_store_stage =
-                        (tma_store_stage + 1) % NUM_TMA_STORE_STAGES;
+                    // 切换 CD stage
+                    tma_store_stage = (tma_store_stage + 1) % NUM_TMA_STORE_STAGES;
                 }
             }
         }

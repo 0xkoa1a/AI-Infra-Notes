@@ -1,10 +1,187 @@
 # CUDA 中的同步
 
+CUDA 同步需要同时回答三个问题：
+
+1. 参与者是否已经执行到约定位置？
+2. 它们此前产生的内存结果是否已经按要求发布和可见？
+3. 如果工作交给了 TMA、Tensor Core 等异步硬件，该异步操作是否已经完成？
+
+这三个问题分别涉及控制同步、内存顺序和异步完成通知。一个同步原语可能只解决其中一部分，不能仅凭名字中出现了 `barrier`、`fence` 或 `wait`，就认为其他问题也自动得到解决。
+
+## 弱内存模型与 happens-before
+
+### “执行到这里”不等于“此前写入已经可见”
+
+同步首先要区分：
+
+```text
+执行位置同步：其他参与者是否已经执行到了某个位置？
+内存可见性同步：其他参与者此前产生的结果，现在是否保证可以被观察到？
+```
+
+在单线程程序中，通常可以按照源码顺序理解：
+
+```cpp
+data = 42;
+ready = true;
+```
+
+但 GPU 采用弱内存模型。只要不破坏单个线程自身必须观察到的行为，编译器和硬件可以延迟或重排部分内存操作；一个线程发出的写入也不一定立即对其他线程、其他 CTA 或异步硬件单元可见。
+
+因此，下面两个事实并不天然等价：
+
+```text
+线程 A 已经执行过 data = 42
+线程 B 现在保证能够读取到 data == 42
+```
+
+“弱”不是说内存会随机出错，而是说程序只能依赖内存模型明确承诺的顺序。GPU 允许较弱的默认顺序，是为了避免让大量并行线程为不必要的全局严格顺序付出代价。
+
+这里的“可见”也是一种内存模型保证，不应简单理解成每次同步都物理清空某一级 cache。硬件可以采用不同实现，只要最终行为满足规定的顺序即可。
+
+### happens-before
+
+如果内存模型保证操作 A 的效果必须先于操作 B 被观察到，就称 A **happens before** B。它描述的是程序可以依赖的顺序关系，而不只是墙上时钟所看到的“谁先执行”。
+
+happens-before 通常由以下关系组合而成：
+
+- 同一线程中受保证的程序顺序；
+- 两个参与者之间匹配的同步关系，例如 release 与 acquire；
+- 上述关系的传递闭包。
+
+典型的生产者—消费者关系是：
+
+```text
+生产者写数据
+    ↓ program order
+release
+    ↓ synchronizes-with
+acquire
+    ↓ program order
+消费者读数据
+```
+
+于是生产者的写入 happens before 消费者的读取。反过来，如果两个并发参与者访问同一数据、至少一方写入，却没有建立所需的 happens-before，程序就不能假设消费者一定看到新值。
+
+### 同步原语的两个基本维度
+
+一个同步原语至少要从两个维度理解：
+
+```text
+控制语义：谁需要 arrive，谁需要 wait，什么时候可以继续？
+内存语义：同步点前后的哪些内存访问被排序，结果对谁可见？
+```
+
+例如 `__syncthreads()` 同时提供 CTA 内的线程集合和相应的内存可见性。split barrier 则把控制过程拆成 `arrive` 与 `wait`，内存语义还可以进一步选择 `release`、`acquire` 或 `relaxed`。
+
+面对异步硬件时还要增加第三个维度：该原语是否真的跟踪异步操作的完成。普通线程 barrier 并不会自动等待 TMA 或 Tensor Core。
+
+## Memory proxy（内存代理）
+
+### proxy 是什么
+
+proxy 是 GPU 内存模型用来区分不同内存访问机制的抽象，可以理解为“访问内存的通道”或“观察内存的方式”。它不是一块新的物理内存，也不一定对应一个独立 cache。
+
+即使两个操作访问同一个 Shared Memory 地址，如果它们通过不同 proxy 完成，内存模型也不一定自动保证后一种访问已经看到前一种访问的结果。程序必须使用该 proxy 组合规定的同步操作建立顺序。
+
+### generic proxy 和 async proxy
+
+CUDA 线程执行的普通 load/store 通过 **generic proxy** 访问内存，例如普通的 Shared Memory 和 Global Memory 读写。
+
+TMA 以及部分 Tensor Core 异步操作则由概念上的 **async thread** 执行，并通过 **async proxy** 访问内存。这里的 async thread 不是某个 `threadIdx.x`，而是内存模型对异步硬件执行者的抽象；它与发射该操作的 CUDA 线程相关联，但不会参与该线程块执行的普通线程 barrier。
+
+以 TMA Store 的源数据为例：
+
+```text
+CUDA threads                          TMA async thread
+     │                                      │
+     │ 普通 SMEM store                      │ 异步 SMEM read
+     ▼                                      ▼
+generic proxy ───── Shared Memory ───── async proxy
+```
+
+虽然两边访问的是同一块 SMEM，但“CUDA 线程已经执行完 store”本身不能建立下面的跨代理关系：
+
+```text
+generic proxy write  happens-before  async proxy read
+```
+
+### proxy fence
+
+在 TMA Store 发射前，`fence.proxy.async.shared::cta` 用来把此前的 generic SMEM 写入排在后续 async proxy 访问之前。可以把它理解成把本线程刚写好的 SMEM 数据“发布”给 TMA 所在的 async proxy。
+
+proxy fence：
+
+- 建立指定 proxy、地址空间和作用域之间的内存顺序；
+- 不等待其他 CUDA 线程；
+- 不发射 TMA；
+- 不等待 TMA 完成；
+- 不要求真的把数据复制到另一块缓冲区。
+
+它和普通线程 barrier 不能互相替代：
+
+- proxy fence 处理 generic proxy 与 async proxy 之间的顺序，但只发布执行它的线程此前的写入；
+- CTA barrier 或 named barrier 负责让多个生产线程集合，但本身不能代替 TMA 所要求的跨 proxy 顺序。
+
+同样，某个 barrier 具有 release/acquire 内存语义，也不代表它是“覆盖所有访问机制的万能 fence”。release/acquire、同步作用域和 proxy 是不同维度：前两者说明哪些访问在什么参与者范围内排序，proxy fence 则专门说明跨哪两种访问机制建立顺序。异步操作或特殊操作还必须遵守各自规定的完成与发布协议。
+
+因此，如果一个 SMEM tile 是多个线程共同写出的，每个生产线程都需要先完成自己的写入并执行 proxy fence，然后所有生产线程集合，最后才由一个线程发射 TMA Store。不能只让最终发射 TMA 的线程执行 fence，因为它不能替其他线程发布写入。
+
+完整的发射前关系是：
+
+```text
+每个生产线程写 SMEM
+        ↓
+每个生产线程执行 async proxy fence
+        ↓
+所有生产线程执行 CTA/named barrier
+        ↓
+一个线程发射 TMA Store
+```
+
+### proxy 可见性与异步完成是两件事
+
+proxy fence 只解决“发射 TMA 时能否正确看到源 SMEM”，并不说明 TMA Store 何时完成。发射后的完成状态由 bulk async-group 跟踪：
+
+- `cp.async.bulk.commit_group` 把发射线程此前尚未提交的 bulk async 操作组成一个新的完成组；它不是等待。
+- `cp.async.bulk.wait_group N` 等到至多只剩最近的 `N` 个 group 尚未完成，更早的 group 必须全部完成。
+- `cp.async.bulk.wait_group 0` 等待该线程此前提交的所有 group 完成。
+
+bulk async-group 是 per-thread 的。发射并 commit TMA Store 的线程负责等待自己的 group；其他线程如果要复用相应 SMEM stage，需要由发射线程完成 wait，再通过 CTA/named barrier 把“stage 已可复用”通知给它们。
+
+普通的 `wait_group` 等待完整完成，包括读完源 SMEM 和写完目标 Global Memory。带 `.read` 的形式只要求读完源地址：安全覆盖源 SMEM 只需要读完成，而在 kernel 结束前确认最终输出已经写回，则需要完整完成。
+
+多 stage 流水可以令 `N` 非零，从而允许少量较新的 Store group 保持 in flight。覆盖某个 SMEM stage 前，必须保证之前读取该 stage 的旧 group 已经退出允许保留的 pending 窗口。
+
+可以用下面的表格区分这些操作：
+
+| 操作 | 等待其他线程 | 建立 generic ↔ async proxy 顺序 | 跟踪 TMA Store 完成 |
+|---|---:|---:|---:|
+| CTA/named barrier | 是 | 否 | 否 |
+| `fence.proxy.async.shared::cta` | 否 | 是 | 否 |
+| `cp.async.bulk.commit_group` | 否 | 否 | 建立完成组，但不等待 |
+| `cp.async.bulk.wait_group` | 只阻塞执行它的线程 | 否 | 是 |
+
+因此 TMA Store 的完整同步协议是：
+
+```text
+写 SMEM
+→ proxy fence
+→ 生产线程集合
+→ 单线程发射 TMA Store
+→ 同一线程 commit
+→ 同一线程 wait 到旧 group 已读完相应 SMEM
+→ 线程集合后复用相应 SMEM stage
+```
+
 ## `__syncthreads()`
 
 `__syncthreads()` 是一个 **CTA 内的同步原语**。它保证：
+
 - CTA 内所有参与线程都到达；
 - barrier 之前的相关内存访问，对 barrier 之后的 CTA 线程可见。
+
+这里的参与者是 CUDA 线程。`__syncthreads()` 本身不是 TMA 或 Tensor Core 的完成等待，也不能替代异步硬件要求的 proxy fence。它可以放在各生产线程的 proxy fence 之后，保证负责发射异步操作的线程等到所有生产者都完成发布。
 
 以下写法可能会死锁：
 
@@ -74,6 +251,26 @@ pending_arrival_count = expected_arrival_count
 ```
 
 因此，mbarrier 是**自动循环重置的 barrier**，通常不需要在每轮循环重新执行 `mbarrier.init`。
+
+### 初始化后的发布
+
+`mbarrier.init` 只是建立 barrier 的初始状态。初始化完成之后，还必须保证所有可能使用它的参与者不会过早执行后续 mbarrier、远程或异步操作。
+
+如果 barrier 只在当前 CTA 内由普通线程使用，通常由 CTA barrier 在初始化者和其他线程之间完成集合与发布。如果它将被 cluster 内其他 CTA 的远程操作或异步硬件使用，则需要遵守更专门的初始化协议，例如：
+
+```text
+初始化线程执行 mbarrier.init
+→ fence.mbarrier_init.release.cluster 发布初始化
+→ cluster barrier 让所有 CTA 集合并 acquire
+→ 才允许远程或异步操作使用该 mbarrier
+```
+
+这里的两个步骤仍然不是冗余的：
+
+- `fence.mbarrier_init.release.cluster` 专门排序此前的 `mbarrier.init`；
+- cluster barrier 负责 cluster 范围的 rendezvous，并保证其他 CTA 不会在发布完成前开始使用。
+
+`barrier.cluster` 自身确实具有默认的 release/acquire 语义，但它对普通内存访问的保证明确排除了异步操作，也不能自动替代 ISA 为 mbarrier 初始化规定的专用 fence。关键不是“cluster barrier 没有内存语义”，而是它的内存语义有明确的操作类别边界。
 
 ---
 
@@ -170,85 +367,11 @@ tx-count == 0
 
 这也是 mbarrier 与普通线程 barrier 最大的区别之一：完成一个 phase 的“参与者”不一定都是 CUDA 线程，也可以是 TMA、Tensor Core 或其他异步硬件单元。
 
-## 弱内存模型与同步语义
+TMA Load 等异步写入通过 async proxy 修改 SMEM。异步操作完成后，对应的完成机制还会建立规定的 proxy 可见性；消费者以相应的 acquire 语义成功等待跟踪该操作的 mbarrier 后，才能通过普通 CUDA load 安全读取结果。因此，mbarrier wait 不只是“查看一个计数器”，它同时是异步完成协议的一部分。
 
-### “执行到这里”不等于“此前写入已经可见”
+## Release、Acquire 与 Relaxed
 
-同步需要同时考虑两个问题：
-
-1. **执行位置同步**：其他线程是否已经执行到了某个位置？
-2. **内存可见性同步**：其他线程此前产生的内存结果，现在是否保证可以被观察到？
-
-在单线程程序中，通常可以按照源码顺序理解执行过程：
-
-```cpp
-data = 42;
-ready = true;
-```
-
-但 GPU 是弱内存模型。只要不改变单个线程自身可观察到的结果，编译器和硬件可以调整部分操作的执行顺序；一个线程发出的写入也不一定立刻对其他线程、其他 CTA 或异步硬件单元可见。
-
-因此，下面两个事实并不天然等价：
-
-```text
-线程 A 已经执行过 data = 42
-线程 B 现在保证能够读取到 data == 42
-```
-
-程序需要通过具有合适内存语义的同步操作，在两个线程之间建立明确的顺序关系。
-
-这里的“可见”是一种**内存模型保证**。它不应该简单理解成每次都物理清空某级 cache；硬件可以用不同方式实现，只要最终行为满足规定的顺序和可见性即可。
-
----
-
-### 同步原语的两个维度
-
-一个同步原语可以同时具有两类语义：
-
-```text
-控制语义：线程是否需要到达、等待
-内存语义：同步点前后的内存访问如何排序、何时可见
-```
-
-例如 `__syncthreads()` 同时提供这两类保证：
-
-- CTA 中的参与线程全部到达后才能继续；
-- barrier 前的相关内存访问，对 barrier 后的 CTA 线程可见。
-
-但是，split barrier 将控制同步拆成了 `arrive` 和 `wait`，内存语义还可以进一步选择 `release`、`acquire` 或 `relaxed`。
-
----
-
-### `arrive` 和 `wait` 的控制语义
-
-`arrive` 表示当前参与者已经到达同步点。它通常只更新 barrier 状态，不立即等待其他参与者：
-
-```cpp
-barrier.arrive();
-
-// 可以继续执行不依赖 barrier 完成的工作
-independent_work();
-```
-
-`wait` 则等待规定的参与者全部到达，或者等待当前 mbarrier phase 的 arrival count 和 tx-count 都满足完成条件：
-
-```cpp
-barrier.wait();
-
-// barrier 完成后才能执行的工作
-dependent_work();
-```
-
-只讨论控制流时，可以把它们理解为：
-
-```text
-arrive：我已经到达
-wait：等所有人都到达
-```
-
-但这句话尚未说明 barrier 前后的内存访问如何排序。这个问题由 release/acquire 等内存语义解决。
-
----
+上一节的 `arrive` 和 `wait` 描述了控制过程：`arrive` 表示“我已经到达”，`wait` 表示“等规定的参与者或事务完成”。它们前后的普通内存访问如何排序，则由 release、acquire 或 relaxed 等内存语义决定。
 
 ### `release`：发布此前的结果
 
@@ -398,3 +521,9 @@ barrier.cluster.wait.acquire.aligned;
 ```
 
 `.aligned` 与内存序无关。它要求同一 warp 中的非退出线程以一致方式执行这条 barrier 指令，不能把它理解成更强的 acquire/release。
+
+还要注意，PTX 对 `barrier.cluster.wait` 的可见性承诺明确写着“除异步操作之外”。因此：
+
+- 它可以同步 cluster 中参与线程的到达，并传播其覆盖范围内的普通内存访问；
+- 它不会仅凭自身就等待 TMA、`tcgen05` 等异步工作完成；
+- 它也不能替代异步 proxy fence、mbarrier tx-count、`tcgen05.commit` 或其他专用完成协议。
