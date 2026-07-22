@@ -506,6 +506,8 @@ r1 上的 t7
 
 因此，DeepEP High-Throughput 模式可以概括为：通信阶段追求按 Source、按 Rank 连续，以便高效执行大块传输；计算阶段追求按 Expert 连续，以便高效执行 Grouped GEMM。它愿意支付 Count Exchange、Prefix-Sum 和本地重排的固定成本，换取紧凑 Buffer 与更高的持续带宽。
 
+
+
 ---
 
 ## Low-Latency 模式
@@ -665,3 +667,8 @@ r1 上的 t7
 
 因此，DeepEP Low-Latency 模式可以概括为：用容量有上界、地址稳定但不完全紧凑的 Buffer，换掉精确 Shape 同步和分层转发带来的固定延迟，并让 Expert 输入直接按 Expert 组织。它优化的是一次 Decode 通信尽快完成，而不是大批 token 下的最高持续吞吐。
 
+## Hybrid-EP
+
+Hybrid-EP 是 DeepEP 中一种硬件感知的 EP 通信实现：保持“同号 GPU 间 RDMA、节点内 NVLink 转发”的分层通信方式，但用 TMA、persistent kernel、warp specialization 和 chunk pipeline 重构 dispatch/combine，从而减少通信占用的 SM，并将 RDMA、NVLink 以及 permute/unpermute 更细粒度地重叠起来。
+
+为什么能省 SM：因为利用了 TMA，数据不用线程亲自搬运。
