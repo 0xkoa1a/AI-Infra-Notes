@@ -1,14 +1,130 @@
-# MMDiT：面向推理 Infra 的结构与性能分析
+# MMDiT：Multimodal Diffusion Transformer
 
-本文假设读者已经理解 DiT 的 latent、patchify、去噪循环、时间步条件和 Transformer Block，不再重复扩散模型基础。
+## DiT 简介
 
-这里讨论的 MMDiT（Multimodal Diffusion Transformer）主要指 Stable Diffusion 3 引入的双流结构：图像 token 和文本 token 使用不同参数处理，但在每层 Joint Attention 中共同参与注意力计算。
+DiT（Diffusion Transformer）保留扩散模型的训练目标和迭代去噪过程，只是将传统 U-Net 去噪骨干替换为 Transformer。原始 DiT 是 Latent Diffusion Model：VAE 负责图像与 latent 之间的转换，DiT 只处理带噪 latent。
+
+整体数据流为：
+
+```text
+image
+  │ VAE Encoder
+  ▼
+clean latent z0
+  │ scheduler 加噪
+  ▼
+noisy latent zt
+  │ Patchify + Position Embedding
+  ▼
+image tokens
+  │ 多层 DiT Block
+  ▼
+output tokens
+  │ Linear + Unpatchify
+  ▼
+噪声、velocity 或 flow 等去噪目标预测
+```
+
+### Patchify
+
+DiT 的 Patchify 一般直接用 `Conv2d` 实现。令 Kernel Size 和 Stride 都等于 Patch Size，卷积窗口之间不会重叠；每个输出位置对应一个 latent patch，`out_channels` 则是 Transformer Hidden Size $D$。
+
+```python
+patch_embed = nn.Conv2d(
+    in_channels=C,
+    out_channels=D,
+    kernel_size=(p_h, p_w),
+    stride=(p_h, p_w),
+)
+
+x = patch_embed(z_t)           # [B, D, H', W']
+x = x.flatten(2).transpose(1, 2)  # [B, H' * W', D]
+```
+
+这次卷积同时完成 Patch 切分和 Token Projection。卷积输出 `[B, D, H', W']` 仍保留二维网格；再将两个空间维展平并转置，得到 Transformer 使用的 `[B, N_i, D]`，其中 `N_i = H' * W'`。
+
+例如，生成 $256\times256$ 图像时，VAE 经过 $8$ 倍下采样得到 `[B, 4, 32, 32]` 的 latent。使用 `2×2` Patch：
+
+```text
+[B, 4, 32, 32]
+    │ Conv2d(kernel=2, stride=2, out_channels=D)
+    ▼
+[B, D, 16, 16]
+    │ flatten spatial dimensions
+    ▼
+[B, 256, D]
+```
+
+因此 DiT-XL/2 中的 `/2` 表示 Patch Size 为 2。Patch Size 越小，图像 token 越多，空间粒度更细，但 Attention 计算量也更大。
+
+### 二维位置编码
+
+Self-Attention 本身不理解 token 在二维 latent 中的位置，因此需要为每个 Patch 加入与二维坐标对应的位置向量。
+
+原始 DiT 使用固定的二维 Sin-Cos Absolute Position Embedding。它分别编码 Patch 的行、列坐标，再将两部分拼成一个 $D$ 维向量。所有位置按照 Patch Token 相同的展平顺序排列，得到 `[1, N_i, D]` 的 `pos_embed`。
+
+```python
+self.pos_embed = nn.Parameter(
+    torch.zeros(1, num_patches, hidden_size),
+    requires_grad=False,
+)
+
+x = self.x_embedder(z_t)  # [B, N_i, D]
+x = x + self.pos_embed    # [1, N_i, D] 沿 Batch 维广播
+```
+
+位置编码在 Patch Projection 之后、进入第一个 Transformer Block 之前只加一次。原始 DiT 不使用 CLS Token，所有 $N_i$ 个 token 都对应 latent patches。
+
+虽然实现使用 `nn.Parameter` 保存位置编码，但 `requires_grad=False`，训练中不会更新。改变 latent 分辨率会改变 Patch Grid 和 token 数，因此需要重新生成或插值位置编码。后续 DiT 也可能改用 Learned Position Embedding 或 RoPE。
+
+### 时间步与条件注入
+
+Diffusion Timestep 先经过 Sin-Cos Timestep Embedding 和 MLP。原始 Class-Conditional DiT 再将类别 Embedding 与它相加，形成每个样本的全局 Condition `c`。
+
+DiT Block 使用 adaLN-Zero 将 `c` 转换为 Attention 和 MLP 两个分支各自的 Shift、Scale 与 Gate：
+
+```text
+condition c
+   │ MLP
+   ├─ Attention：shift、scale、gate
+   └─ MLP：      shift、scale、gate
+
+image tokens
+   ├─ adaLN → Self-Attention → Gate → Residual
+   └─ adaLN → MLP            → Gate → Residual
+```
+
+`c` 会沿 token 维广播，因此同一个样本中的全部图像 token 接受相同的全局调制。原始 DiT 没有文本 token 流；文本生成模型可以用 pooled text 调制 adaLN，或者增加图像查询文本的 Cross-Attention。
+
+### Final Layer 与 Unpatchify
+
+经过全部 DiT Blocks 后，Final Linear 将每个 `[D]` Token 投影为一个展平的输出 Patch。Unpatchify 再按照原来的 Patch Grid 将它们放回二维 latent：
+
+```text
+[B, H' * W', p_h * p_w * C_out]
+        │ reshape
+        ▼
+[B, H', W', p_h, p_w, C_out]
+        │ permute + merge patch grid
+        ▼
+[B, C_out, H' * p_h, W' * p_w]
+```
+
+输出重新具有 latent 的二维布局。它可能预测噪声、Velocity、Flow，或同时预测扩散目标和方差；Scheduler 再据此将 `z_t` 更新为 `z_{t-1}`。
+
+同一张图像的相邻去噪步存在严格依赖，每一步都会重新运行 DiT。普通 DiT 中持续经过每层 Transformer 更新的主体是一条图像 token 流；MMDiT 改变的不是 Patchify 或扩散循环，而是将文本提升为第二条会持续更新的 token 流。
+
+---
+
+
+## MMDiT 相比 DiT 改了什么
+
+
+MMDiT（Multimodal Diffusion Transformer）主要指 Stable Diffusion 3 引入的双流结构：图像 token 和文本 token 使用不同参数处理，但在每层 Joint Attention 中共同参与注意力计算。
 
 最短的定义是：
 
 > MMDiT 是“两套模态专属 Transformer 参数 + 一次联合 Attention”，而不是普通 DiT 后面再附加一个 Cross-Attention。
-
-## MMDiT 相比 DiT 改了什么
 
 原始 DiT 通常只有图像 latent token 主干。类别或全局条件通过 adaLN 等方式注入；文本条件 DiT 也常使用“图像 Self-Attention + 图像查询文本的 Cross-Attention”。
 
