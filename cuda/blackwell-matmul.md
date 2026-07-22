@@ -565,13 +565,20 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
             // 等最后一个 K block 的 commit，证明完整 tile 已写入 TMEM。
             barrier_wait(tmem_full_bar[accum_idx], accum_phase);
             tcgen05_fence_after();
+            // 此时 TMEM 中有 256x256 个 FP32
+            // 但是本地 TMEM 只有 128 个 lane，因此 M 方向分成 NUM_M_WAVES=2 个 wave
+            // TMA store 每次只写 64 列，因此 N 方向分成 NUM_STORES=4 个 store
+            // 共有 128 个 epilogue 线程，每个线程负责一个 TMEM lane，即 2 x 4 = 8 次 TMA store
 
             #pragma unroll
             for (uint32_t w = 0; w < NUM_M_WAVES; ++w) {
                 #pragma unroll
                 for (uint32_t s = 0; s < NUM_STORES; ++s) {
-                    // 两级 CD SMEM 环形缓冲。wait_group<1> 让旧 store stage
-                    // 在被重新填充前已经释放，同时最多保留一个较新的 store 在途。
+                    // CD SMEM 有两个 stage，每个 stage 16 KiB，足够存放 128 行 × 64 列的 BF16。
+                    // 这里 wait_group<NUM_TMA_STORE_STAGES - 1> 的意思是
+                    // 最多允许 NUM_TMA_STORE_STAGES - 1 个较新的 TMA Store group 仍然 on flight。
+                    // 这保证当 wrap-around 回某个 stage 时，之前使用该 stage 的 store 已经完成。
+                    // 只有一个线程执行 wait，之后用 named barrier 通知另外 127 个 epilogue 线程当前 CD stage 已经可以覆盖。
                     if (epi_warp == 0 && elect_one())
                         tma_store_wait<NUM_TMA_STORE_STAGES - 1>();
                     named_barrier_sync(NUM_EPILOGUE_THREADS,
@@ -582,8 +589,8 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
                             smem_cd_base
                             + tma_store_stage * SMEM_CD_PER_STAGE));
 
-                    // 当前 s 处理 64 列。每轮 tcgen05.ld.x8 读取 8 个 FP32，
-                    // 共循环 8 次；每个线程最终得到本行的 64 个元素。
+                    // 从 TMEM 读取一个 128x64 的 tile，转成 BF16 并 pack 成 u32，写入到 CD SMEM
+                    // 每轮读取 8 个 FP32，共循环 8 次
                     #pragma unroll
                     for (uint32_t i = 0;
                          i < STORE_BLOCK_N / ELEMS_PER_BANK_GROUP;
@@ -607,6 +614,7 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
                         uint32_t p2 = pack_bf16(r4, r5);
                         uint32_t p3 = pack_bf16(r6, r7);
 
+                        // 这里的 swizzle 是为了避免 bank conflict
                         // XOR swizzle：不同 TMEM lane 写不同的 16B bank group，
                         // 与 tma_d 的 SWIZZLE_128B descriptor 相匹配。
                         uint32_t swizzled_col =
@@ -619,8 +627,7 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
                         st_shared_128(smem_addr, p0, p1, p2, p3);
                     }
 
-                    // 只有最后一个 wave 的最后一个 N-chunk 之后，当前 tile
-                    // 的全部 TMEM 数据才都已读出。
+                    // 读完最后一个 wave 的最后一个 N-chunk 之后，尽早释放 TMEM，以被 UMMA 复用
                     if (w == NUM_M_WAVES - 1 &&
                         s == NUM_STORES - 1) {
                         // before_thread_sync 把“本线程此前的 tcgen05 load”排在
@@ -631,11 +638,8 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
                     }
                     __syncwarp();
 
-                    // generic SMEM store 与 TMA async proxy 是两条访问路径；
-                    // proxy fence 使刚写入的 BF16 对 TMA Store 可见。
-                    tma_store_fence();
-                    named_barrier_sync(NUM_EPILOGUE_THREADS,
-                                       EPILOGUE_BAR_ID);
+                    tma_store_fence();    // proxy fence 使刚写入 CD SMEM 的 BF16 对 TMA async proxy 可见。
+                    named_barrier_sync(NUM_EPILOGUE_THREADS, EPILOGUE_BAR_ID);  // 保证所有 128 个线程都已经填完自己的行
 
                     // 128 个线程填好 CD stage 后，仅一个线程发射 TMA Store。
                     if (epi_warp == 0 && elect_one()) {
@@ -657,15 +661,12 @@ UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full 
             }
         }
 
-        // 最后没有下一次 stage-reuse wait，因此补等所有 TMA Store 完成。
+        // 最后离开 persistent loop 时，等待所有尚未完成的 TMA Store，确保 kernel 退出前 Global D 已写完。
         if (epi_warp == 0 && elect_one())
             tma_store_wait<0>();
     }
 ```
 
-为什么 `tmem_empty` 需要 256 次 arrival，而不是每个 CTA 只让一个线程 arrive？因为 TMEM load 是由 128 个 epilogue 线程分工完成的，`tcgen05_fence_before()` 约束的是执行它的那个线程此前的 tcgen05 操作。让所有线程各自执行 fence + arrive，才能把每个线程的 TMEM 读取都纳入“可以覆盖 TMEM”的证明链。
-
-`tmem_empty` 在 TMEM→SMEM 全部结束后立即发出，不等待 Global Store 完成。这是安全的：后续 MMA 只会覆盖 TMEM；尚在途的 TMA Store 读取的是 CD SMEM，由另一套两级 store stage 和 bulk-group wait 保护。
 
 ### 2.7 清理
 
