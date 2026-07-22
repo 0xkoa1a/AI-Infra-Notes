@@ -39,12 +39,13 @@ DeepEP 将 EP 的通信抽象为两个专用原语：
 
 ---
 
-## High-Throughput
+## 统一示例 Setup
 
-下面用一个简化但典型的 Top-2 MoE 例子，追踪单个 token 在 DeepEP v1 高吞吐模式中的完整路径。
+下面用一个简化但典型的 Top-2 MoE 例子，对照同一个 token 在 DeepEP v1 High-Throughput 和 Low-Latency 模式中的完整路径。两种模式的 Router 结果和 Expert 计算语义相同，区别主要在接收空间如何确定、数据如何传输以及接收端如何组织布局。
 
+以下具体路径以 DeepEP v1 为口径。DeepEP v2 已将两种模式统一到 `ElasticBuffer` 接口。
 
-## 初始拓扑与 Expert 放置
+### 初始拓扑与 Expert 放置
 
 假设有 2 个节点，每个节点 4 张 GPU，共 8 个 rank。每张 GPU 放置两个 expert：
 
@@ -86,11 +87,51 @@ q1 = (token=t7, topk_slot=1) → E13
 * E3 在本地 r1 上；
 * E13 在远端 Node 1 的 r6 上。
 
-接下来分别追踪这两个分支。
+### 两种模式共同的计算语义
+
+两种模式都需要完成相同的逻辑过程：
+
+```text
+Dispatch
+  ├── q0：把 h7 交给本地 E3
+  └── q1：把 h7 交给远端 E13
+
+Expert Compute
+  ├── y7_local  = Expert3(h7)
+  └── y7_remote = Expert13(h7)
+
+Combine
+  └── 把两个分支恢复到 t7，并按路由权重归约
+```
+
+最终结果始终是：
+
+```text
+output(t7)
+= 0.35 × Expert3(h7)
++ 0.65 × Expert13(h7)
+```
+
+无论采用哪种模式，系统都必须保留足够的映射信息，使 Expert 输出能够恢复到：
+
+```text
+source rank = r1
+token       = t7
+Top-K slot  = 0 或 1
+weight      = 0.35 或 0.65
+```
+
+其中 `q0` 始终只涉及 r1 上的本地 E3。下面重点追踪远程分支 `q1: t7 → E13 → r6`，分别观察两种模式如何完成 Dispatch 和 Combine。
 
 ---
 
-## 本地路由：确定目的 Rank
+## High-Throughput 模式
+
+High-Throughput 主要用于训练和 Prefill。此时每个 Rank 通常持有较多 token，优化目标是获得紧凑 Buffer 和大块连续传输，使 NVLink、RDMA 与 Grouped GEMM 保持较高吞吐。
+
+---
+
+### 本地路由：确定目的 Rank
 
 Router 输出的本质不只是 expert 编号，还要知道 expert 所属的目标 rank：
 
@@ -126,7 +167,7 @@ t7 → E13
 
 ---
 
-## Count Exchange：先交换计数
+### Count Exchange：先交换计数
 
 所有 rank 先交换很小的元数据。
 
@@ -167,7 +208,7 @@ compact_recv_buffer[10]
 
 ---
 
-## Prefix-Sum：计算每个 Source 的写入区间
+### Prefix-Sum：计算每个 Source 的写入区间
 
 r6 对各 source 的 count 做前缀和：
 
@@ -214,7 +255,7 @@ compact_recv_buffer[3]
 
 ---
 
-## 发送端打包：把 t7 放入 r6 的发送区域
+### 发送端打包：把 t7 放入 r6 的发送区域
 
 在 r1 上，所有 assignment 通常先按目标 rank 打包。
 
@@ -248,11 +289,11 @@ Top-K 分支：slot 1
 * 返回后应该恢复到哪个 token、哪个 Top-K 分支。
 
 ---
-## Payload 传输：同号 GPU 间 RDMA + 目标节点内 NVLink 转发
+### Payload 传输：同号 GPU 间 RDMA + 目标节点内 NVLink 转发
 
-由于源 rank `r1` 位于 Node 0 的 GPU1，而目标 expert `E13` 位于 Node 1 的 `r6 / GPU6`，该 assignment 需要先跨节点，再在目标节点内转发。
+由于源 rank `r1` 位于 Node 0 的 GPU1，而目标 expert `E13` 位于 Node 1 的 `r6 / GPU2`，该 assignment 需要先跨节点，再在目标节点内转发。
 
-DeepEP v1 高吞吐模式并不是让 `r1 / GPU1` 直接通过 RDMA 写入 `r6 / GPU6`，也不是让每个节点设置一个统一的代理 GPU。它采用分层转发方式：源 GPU 先通过自己的 RDMA rail，将数据发送到目标节点中具有相同 local rank 的 GPU，然后由该 GPU通过 NVLink 转发给真正的目标 GPU。
+DeepEP v1 高吞吐模式并不是让 `r1 / GPU1` 直接通过 RDMA 写入 `r6 / GPU2`，也不是让每个节点设置一个统一的代理 GPU。它采用分层转发方式：源 GPU 先通过自己的 RDMA Rail，将数据发送到目标节点中具有相同 Local Rank 的 GPU，然后由该 GPU 通过 NVLink 转发给真正的目标 GPU。
 
 因此，`t7 → E13` 的逻辑路径为：
 
@@ -263,7 +304,7 @@ Node 0：r1 / GPU1
 Node 1：同号的 GPU1
    ↓ 从 GPU1 的 RDMA 接收 FIFO 取出数据
    ↓ 机内 NVLink 转发
-Node 1：r6 / GPU6
+Node 1：r6 / GPU2
    ↓
 r6 的接收缓冲区
 ```
@@ -275,12 +316,12 @@ Node0 GPU1
     ── RDMA ──>
 Node1 GPU1
     ── NVLink ──>
-Node1 GPU6
+Node1 GPU2
 ```
 
-对于 `t7`，它的 hidden state `h7` 会与目标 expert、源 rank、Top-K 分支等元数据一起发送。到达 Node 1 的 GPU1 后，再通过 NVLink 转发到 GPU6，并最终进入 GPU6 上属于本轮 dispatch 的接收区域。
+对于 `t7`，它的 hidden state `h7` 会与目标 Expert、Source Rank、Top-K 分支等元数据一起发送。到达 Node 1 的 GPU1 后，再通过 NVLink 转发到 GPU2，并最终进入 r6 上属于本轮 Dispatch 的接收区域。
 
-## r6 上的初始布局：按 Source 排列
+### r6 上的初始布局：按 Source 排列
 
 传输完成后，r6 的紧凑接收缓冲区可能是：
 
@@ -321,7 +362,7 @@ by-source layout:
 
 ---
 
-## 本地 Permute：从 by-source 变成 by-expert
+### 本地 Permute：从 by-source 变成 by-expert
 
 r6 上有两个本地 expert：
 
@@ -386,41 +427,11 @@ expert_input_E13[1]
 
 ---
 
-## Expert 计算
+### Expert 计算与 Combine
 
-现在 E12 和 E13 的输入已经分别连续排列，可以进行 grouped GEMM。
+现在 E12 和 E13 的输入已经分别连续排列，可以直接执行 Grouped GEMM。E13 计算完成后，`y7_remote` 位于 r6 的 E13 输出组中。
 
-对于 t7 的远程分支：
-
-```text
-y7_remote = Expert13(h7)
-```
-
-与此同时，t7 的本地分支在 r1 上进入 E3：
-
-```text
-y7_local = Expert3(h7)
-```
-
-注意两个 expert 接收到的是同一个输入 hidden state h7，但参数不同：
-
-```text
-Expert3(h7)  ≠  Expert13(h7)
-```
-
-因此产生两个不同的 expert 输出。
-
----
-
-## Combine：基本沿原路径返回
-
-E13 计算完成后，t7 的输出位于 r6：
-
-```text
-y7_remote = Expert13(h7)
-```
-
-首先根据之前保存的 inverse permutation，把 by-expert 输出恢复为适合按 source 返回的布局：
+High-Throughput Combine 首先根据 Dispatch 保存的反向映射，把 by-expert 输出恢复为适合按 Source Rank 返回的布局：
 
 ```text
 by-expert output
@@ -428,22 +439,20 @@ by-expert output
 by-source output
 ```
 
-由于 t7 原始 source 是 r1，因此它被放入：
+由于 t7 的 Source Rank 是 r1，因此 `y7_remote` 被放入：
 
 ```text
 send_back_to_r1
 ```
 
-然后反向跨节点传输：
+返回过程采用与 Dispatch 对称的分层路径。r6 位于 Node 1 的 GPU2，因此先通过 GPU2 对应的 RDMA Rail 发往 Node 0 的 GPU2，再由 NVLink 转发给真正的 Source Rank r1：
 
 ```text
-r6 / Node 1
-   ↓ 本地队列
-RDMA / InfiniBand
-   ↓
-Node 0
-   ↓ NVLink / 本地搬运
-r1
+Node 1：r6 / GPU2
+    ── RDMA ──>
+Node 0：GPU2
+    ── NVLink ──>
+Node 0：r1 / GPU1
 ```
 
 回到 r1 后，根据 token id 和 Top-K slot 恢复：
@@ -455,31 +464,11 @@ weight 0.65
 output y7_remote
 ```
 
-本地 E3 分支不需要跨节点返回：
-
-```text
-slot 0
-weight 0.35
-output y7_local
-```
-
-最后做加权归约：
-
-```text
-output(t7)
-= 0.35 × Expert3(h7)
-+ 0.65 × Expert13(h7)
-```
-
-也就是：
-
-```text
-o7 = 0.35 y7_local + 0.65 y7_remote
-```
+本地 E3 分支不需要跨节点返回。r1 最后按照统一示例中的计算语义，将两个 Top-K 分支恢复到 t7 并加权归约。
 
 ---
 
-## 整条路径压缩成一行
+### 整条路径压缩成一行
 
 对于远程分支 `t7 → E13`：
 
@@ -491,13 +480,14 @@ r1 上的 t7
 → r6 根据所有 count 做 prefix-sum
 → 为 r1 分配接收区间 [2,5)
 → t7 被打包为 r1→r6 的第 2 个 assignment
-→ 经 NVLink / RDMA 跨节点传输
+→ 从 Node 0 GPU1 经 RDMA 到 Node 1 GPU1
+→ 再经 NVLink 转发到 r6 / GPU2
 → 写入 r6 compact buffer[3]
 → 从 by-source permute 到 E13 输入组
 → Expert13(h7)
 → inverse permute
 → 按 source 打包回 r1
-→ RDMA 返回
+→ 经 Node 1 GPU2、RDMA、Node 0 GPU2 和 NVLink 返回 r1
 → 与本地 Expert3(h7) 按路由权重相加
 ```
 
@@ -514,157 +504,164 @@ r1 上的 t7
 → 恢复原 token 顺序并加权归约
 ```
 
-因此，DeepEP 高吞吐模式可以概括为：通信阶段追求按 source、按 rank 连续，以便高效大块传输；计算阶段追求按 expert 连续，以便高效执行 grouped GEMM。
-
-
-
-
-## High-Throughput 与 Low-Latency
-
-DeepEP 同时面向两种差异很大的负载。V2 使用统一的 `ElasticBuffer` 接口，但两种性能目标仍然存在。
-
-### High-Throughput
-
-High-Throughput 路径主要用于训练和 Prefill：
-
-* token 多，消息较大；
-* 重点是持续带宽和紧凑的 Expert 输入布局；
-* 可以用异步 Event、多个 Microbatch 或流水调度隐藏通信；
-* Pack、量化和通信的固定开销容易摊薄。
-
-此时应优先优化单位时间处理的有效 Routed Token 数，而不是单次 Collective 的最短延迟。
-
-### Low-Latency
-
-Low-Latency 路径主要用于 Decode：
-
-* 每步 token 少，消息很小；
-* 固定启动延迟、元数据处理和同步占比更高；
-* 通信很难被同一请求的 Expert GEMM 完全隐藏；
-* Buffer 上界、稳定地址和可复用 Handle 对 CUDA Graph 更重要。
-
-V2 允许在适用时缓存并复用路由 Handle，减少重复的布局计算与 CPU 同步。但只有路由结果确实不变时才能复用，不能跨不同 token 强行沿用旧路由。
-
-因此，High-Throughput 与 Low-Latency 的区别不是两套 EP 数学公式，而是大消息带宽、Buffer 紧凑度、启动延迟和可重叠性之间的不同取舍。
+因此，DeepEP High-Throughput 模式可以概括为：通信阶段追求按 Source、按 Rank 连续，以便高效执行大块传输；计算阶段追求按 Expert 连续，以便高效执行 Grouped GEMM。它愿意支付 Count Exchange、Prefix-Sum 和本地重排的固定成本，换取紧凑 Buffer 与更高的持续带宽。
 
 ---
 
-## DeepEP 的通信量
+## Low-Latency 模式
 
-DeepEP 不改变 Top-$k$ Routing 产生的逻辑 Routed Token 数。设：
+Low-Latency 主要用于 Decode。此时每个 Rank 每步通常只有少量 token，消息很小，Count Exchange、CPU 等待、动态 Shape 和多段转发的固定延迟很难摊薄。因此它不再优先追求恰好容纳本轮 token 的最紧凑 Buffer，而是用更多预留空间换取更短、更稳定的数据路径。
 
-* 每 Rank 初始有 $T_{\text{local}}$ 个 token；
-* 每个 token 选择 $k$ 个 Experts；
-* Hidden Size 为 $H$；
-* EP Degree 为 $p$；
-* Dispatch 和 Combine 每个元素分别占 $b_d$、$b_c$ 字节。
-
-在 Expert 均匀放置且路由均匀时，DeepEP 的理想每 Rank Payload 发送量仍为：
-
-$$V_{\text{DeepEP}}\approx\frac{p-1}{p}kT_{\text{local}}H(b_d+b_c)$$
-
-若 Dispatch 和 Combine 都使用相同精度 $b$：
-
-$$V_{\text{DeepEP}}\approx2\frac{p-1}{p}kT_{\text{local}}Hb$$
-
-这与普通 EP 的逻辑通信量一致。DeepEP 的主要优化来自：
-
-* 减少额外 Permute 和中间 Buffer 的 HBM 流量；
-* 将通信映射到更合适的 NVLink / RDMA 路径；
-* 使用 FP8 等低精度降低 Dispatch Payload；
-* 让通信与独立计算重叠；
-* 用更少通信 SM 达到链路饱和。
-
-公式不包含 Expert Id、Router Weight、Scale、Offset 和 Count 等元数据。FP8 Dispatch 仍需要 Scale，因此实际字节数不能只按一个字节直接估算。
-
-还要区分两种带宽：
-
-* **Algorithm Bandwidth**：有效 Routed Payload 除以端到端通信时间；
-* **Bus Bandwidth**：NVLink 或 NIC 上实际传输的物理字节数除以时间。
-
-层次化转发会让同一 Payload 依次经过 RDMA 和 NVLink，因此 Algorithm Bandwidth 不能直接当作 NIC 的物理吞吐。
+下面继续使用同一个 `q1: t7 → E13 → r6`，并假设各 Rank 产生的 Assignment 与 High-Throughput 示例完全相同。也就是说，r6 最终仍然会收到 10 个 Assignment，其中 E12 和 E13 各接收 5 个；改变的只是这些数据如何到达并形成 Expert 输入。
 
 ---
 
-## NVLink 与 RDMA 的层次化通信
+### 根据容量上界预分配接收 Buffer
 
-节点内 NVLink/NVSwitch 和节点间 RDMA 的带宽、延迟和可连接规模差异很大。DeepEP 不把它们简单视为同一种链路，而是支持 Direct 与 Hybrid 两类拓扑模式。
-
-Hybrid Mode 的基本思想是：
+Low-Latency 模式预先给定每个 Rank 最多处理的 token 数 `T_max`，并据此分配稳定的 RDMA Buffer。对于每个本地 Expert，接收容量按所有 Source Rank 的最坏情况预留，可以概念化为：
 
 ```text
-源 GPU
-  │
-  ├── 节点内目标：NVLink
-  │
-  └── 跨节点目标：RDMA 到目标节点
-                         │
-                         ▼
-                    节点内 NVLink 转发
-                         │
-                         ▼
-                     目标 Expert GPU
+recv_x[
+    num_local_experts,
+    num_ranks × T_max,
+    hidden
+]
 ```
 
-这样可以把跨节点通信集中到适合访问 NIC 的路径，再利用节点内高速互联完成本地分发，避免让每个 GPU 与所有远端 GPU 建立同等复杂的通信关系。
+r6 上有 E12 和 E13，因此它持有两个 Expert 的接收区域：
 
-Direct Mode 不采用相同的层次化转发假设，具体 Peer 映射取决于所使用的 DeepEP 版本。哪种模式更好取决于 GPU–NIC Affinity、NVLink Domain、Rail 映射、节点数量和消息大小，不能只根据 EP Degree 决定。
+```text
+recv_x[E12, 0 : 8 × T_max, :]
+recv_x[E13, 0 : 8 × T_max, :]
+```
 
-层次化通信解决的是数据如何穿过不同硬件域，并不能消除热门 Expert。若 Router 让大量 token 聚集到同一 Rank，DeepEP 仍然要面对最大接收量和最慢 Expert。
+这些区域的容量是上界，并不意味着每轮都会填满。实际有效数量由设备端的计数给出：
 
----
+```text
+recv_count[E12] = 5
+recv_count[E13] = 5
+```
 
-## 为什么通信会占用 SM
+因此 Low-Latency 模式不需要先在 CPU 侧得到总接收量 10，再为本轮动态构造 `compact_recv_buffer[10]`。Kernel 内部仍然需要维护接收计数和源位置等元数据，但发送 Payload 不再依赖“先交换精确 Count，再完成 Prefix-Sum，再确定动态输出 Shape”这条前置路径。
 
-GPUDirect RDMA 可以让 NIC 直接读写 GPU HBM，但完整 EP 通信仍然需要 GPU 执行：
-
-* 解析 Routing Map；
-* Pack、量化和布局转换；
-* 发起或推进设备侧通信；
-* 轮询状态与维护同步；
-* 在 Combine 中执行 Top-$k$ Reduce；
-* 将结果写入最终 Buffer。
-
-因此通信 Kernel 会占用一部分 SM。假设 GPU 共有 $S$ 个 SM，其中 $s$ 个分配给通信，在理想重叠窗口中：
-
-$$T_{\text{overlap}}(s)\approx\max\left(T_{\text{comm}}(s),T_{\text{GEMM}}(S-s)\right)$$
-
-增加 $s$ 通常能先降低通信时间，但当 NVLink 或 RDMA 已经饱和后：
-
-$$\Delta T_{\text{comm}}\approx0$$
-
-继续增加通信 SM 只会减少 Grouped GEMM 可用的 SM，使端到端时间反而上升。
-
-DeepEP V2 根据拓扑、带宽和通信规模解析计算 SM 与 QP 数量。目标是找到接近链路饱和所需的最小 SM 数，而不是让通信微基准单独占满整张 GPU。
+代价是接收 Buffer 大于本轮的真实数据量，部分预留位置无效。它用显存空间换取更少的控制路径和更稳定的地址，这也更适合 Decode 和 CUDA Graph。
 
 ---
 
+### 发送端直接按目标 Expert 发起传输
+
+Router 已经给出：
+
+```text
+q1: t7 → E13 → r6
+```
+
+因此 r1 可以直接根据目标 Expert 和目标 Rank 准备消息，而不必先等待 r6 为所有 Source Rank 计算精确的 Prefix-Sum 区间。
+
+对于 t7，消息至少需要携带或关联：
+
+```text
+hidden state：h7
+目标 expert：E13
+source rank：r1
+source token index：t7
+Top-K slot：1
+```
+
+路由权重可以继续保留在 Source Rank，并在 Combine 时使用。
+
+---
+
+### Pure RDMA：直接到达目标 Rank
+
+DeepEP v1 Low-Latency 模式要求参与 Rank 可以通过 RDMA 访问，并使用 IBGDA 从 GPU 侧发起通信。Toekn 直接写向目标 Rank 的目标 Expert 的 RDMA Buffer：
+
+```text
+Node 0：r1 / GPU1
+    ── RDMA / IBGDA ──>
+Node 1：r6 / GPU2
+```
+
+这减少了节点内转发、队列推进以及两段路径之间的协调延迟。对于 Decode 的小消息，这些固定延迟往往比峰值带宽更重要。
+
+---
+
+### r6 直接得到 Expert-major 输入
+
+Low-Latency Dispatch 对外得到的接收结果以本地 Expert 为第一维，因此上层看到的有效数据可以表示为：
+
+```text
+E12 valid region:
+[
+  r0:E12,
+  r1:E12,
+  r2:E12,
+  r6:E12,
+  r7:E12
+]
+
+E13 valid region:
+[
+  r0:E13,
+  r1:E13(t7),
+  r1:E13,
+  r4:E13,
+  r6:E13
+]
+```
+
+`recv_count` 标识每组有多少有效 token。
 
 
-## DeepEP 的性能瓶颈
+---
 
-在不考虑重叠时，一组 MoE Layer 可以粗略写成：
+### Expert 计算与 Combine
 
-$$
-T_{\text{MoE}}\approx
-T_{\text{metadata}}
-+T_{\text{dispatch}}^{\text{collective}}
-+\max_rT_{\text{expert},r}
-+T_{\text{combine}}^{\text{collective}}.
-$$
+E13 对包含 t7 的有效输入执行计算：
 
-DeepEP 将 Permute、Pack 和部分 Reduce 融合进 Dispatch / Combine，因此这些时间已经包含在两个 Collective 中。通信与计算重叠后，真正需要关注的是：
+```text
+y7_remote = Expert13(h7)
+```
 
-$$T_{\text{exposed comm}}=\max\left(0,T_{\text{comm}}-T_{\text{overlapped}}\right)$$
+Low-Latency Combine 根据 Dispatch 保存的 Source 信息，识别出该输出属于 `r1 / t7 / slot 1`，并通过 Pure RDMA 直接返回 Source Rank：
 
-主要瓶颈包括：
+```text
+Node 1：r6 / GPU2
+    ── RDMA / IBGDA ──>
+Node 0：r1 / GPU1
+```
 
-* **路由不均衡**：最大 Receive Count 和最慢 Expert 仍会决定整个 EP Group 的长尾；
-* **通信 SM 过多**：Collective 更快，但 Grouped GEMM 因可用 SM 下降而变慢；
-* **通信 SM 过少**：Pack、Reduce 或设备侧通信无法喂满 NVLink / RDMA；
-* **拓扑错误**：GPU–NIC Affinity、Rail 或 Process Group 排布错误会形成热点链路；
-* **Decode 小消息**：元数据、Kernel Launch 和同步时间难以摊薄；
-* **Buffer 上界过大**：提高稳定性和 Graph 兼容性，但会挤占 Expert 权重与 KV Cache 显存；
-* **隐藏同步**：D2H Count、动态分配或错误的 Event 依赖会破坏异步重叠。
+Combine 在返回过程中按照 Top-K Weight 对各 Expert 分支做归约。r1 最终得到统一示例中定义的 t7 输出。
 
-如果 DeepEP 微基准带宽很高，但模型端到端没有提升，应优先检查通信 SM 是否挤占 GEMM、是否存在额外布局 Kernel，以及 Event 等待是否真的与独立计算重叠。
+---
+
+### 整条路径压缩成一行
+
+对于远程分支 `t7 → E13`：
+
+```text
+r1 上的 t7
+→ Router 选择 E13
+→ 确定目标 rank r6
+→ 使用预分配的容量上界，不等待精确接收 Shape
+→ 按 E13 准备 h7 和 Source 元数据
+→ 从 r1 / GPU1 经 Pure RDMA 直接写向 r6 / GPU2
+→ 进入 r6 的 E13 Expert-major 有效区域
+→ Expert13(h7)
+→ 根据 Dispatch Handle 找回 r1 / t7 / slot 1
+→ 经 Pure RDMA 直接返回 r1
+→ 与本地 Expert3(h7) 按路由权重归约
+```
+
+最核心的布局变化是：
+
+```text
+原始 token 顺序
+→ 按目标 Expert 直接发送
+→ 接收端得到 Expert-major Buffer
+→ Expert 计算
+→ 按 Source 信息直接返回并归约
+```
+
+因此，DeepEP Low-Latency 模式可以概括为：用容量有上界、地址稳定但不完全紧凑的 Buffer，换掉精确 Shape 同步和分层转发带来的固定延迟，并让 Expert 输入直接按 Expert 组织。它优化的是一次 Decode 通信尽快完成，而不是大批 token 下的最高持续吞吐。
+
