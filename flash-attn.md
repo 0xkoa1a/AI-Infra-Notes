@@ -19,7 +19,7 @@ $$
 
 FlashAttention v1 的核心目标是：
 
-> 不改变 Attention 的数学结果，不在 HBM 中物化完整的 $N\times N$ Attention 矩阵。
+> 不改变 Attention 的数学结果，不在 HBM 中 materialize 完整的 $N\times N$ Attention 矩阵。
 
 它通过 tiling、kernel fusion 和 online softmax，将计算拆成可以放入片上 SRAM 的小块，从而减少 HBM 访问。它仍然是 exact attention，而不是稀疏或近似 Attention。
 

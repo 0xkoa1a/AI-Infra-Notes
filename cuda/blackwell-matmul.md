@@ -100,7 +100,7 @@ Epilogue warps:               read tile 0 / TMA store
                                      │tmem_empty
 ```
 
-它们不是每处理一个 tile 就重新集合，而是通过 barrier 组成长期运转的生产者—消费者流水线。TMA 可以领先 MMA 最多 4 个 K block；epilogue 把结果读出 TMEM 后便尽快释放 TMEM，使后续 MMA 能与尚未结束的 TMA Store 重叠。
+它们通过 barrier 组成长期运转的生产者—消费者流水线。TMA 可以领先 MMA 最多 4 个 K block；epilogue 把结果读出 TMEM 后便尽快释放 TMEM，使后续 MMA 能与尚未结束的 TMA Store 重叠。
 
 ### 1.4 三种“stage”不要混淆
 
@@ -234,6 +234,12 @@ struct TileScheduler {
 
 ### 2.3 Kernel 初始化
 
+每个 CTA 初始化：
+- 用于在 TMA producer 和 UMMA consumer 之间同步的 `full_bar[NUM_STAGES]` 和 `empty_bar[NUM_STAGES]`
+- 用于在 UMMA producer 和 epilogue consumer 之间同步的 `tmem_ful_bar[NUM_EPILOGUE_STAGES]` 和 `tmem_empty_bar[NUM_EPILOGUE_STAGES]`
+
+然后预取 A、B、D 的 TMA descriptor，并准备 UMMA 的 instruction descriptor
+
 ```cpp
 __global__ void
 __cluster_dims__(2, 1, 1)
@@ -356,6 +362,12 @@ bf16_gemm_2sm_kernel(
 
 ### 2.4 TMA warp：生产 A/B SMEM stage
 
+每个 CTA 的 warp 0 的其中一个线程发射 TMA 指令，以 NUM_STAGES 级流水线将 A/B tile 加载到本地 SMEM。
+- 每个 CTA 将一块 256x64 的 A tile 加载到自己的 SMEM
+- 每个 CTA 将一块 128x64 的 B tile 加载到自己的 SMEM
+
+两个 CTA 使用不同的 A tile 产生不同的输出 tile，但共享同一个 N 区间的 B 数据。
+
 ```cpp
     if (warp_idx == 0 && elect_one()) {
         // ======================== TMA WARP ========================
@@ -364,7 +376,7 @@ bf16_gemm_2sm_kernel(
         uint32_t m_block, n_block;
         uint32_t stage = 0, phase = 0;
 
-        while (scheduler.get_next_block(m_block, n_block)) {
+        while (scheduler.get_next_block(m_block, n_block)) {  // persistent loop
             // 两个 CTA 的 n_block 相同、m_block 不同。
             const int32_t m_coord = m_block * BLOCK_M;
             const int32_t n_coord =
@@ -401,8 +413,6 @@ bf16_gemm_2sm_kernel(
             }
         }
 ```
-
-`full_bar[stage]` 完成需要同时满足：两次 arrival 已发生，且两个 CTA 总计 `2 × 49152` 字节的 TMA tx-count 已归零。
 
 ### 2.5 MMA warp：消费 SMEM，生产 TMEM
 
@@ -520,10 +530,11 @@ bf16_gemm_2sm_kernel(
                 stage = (stage + 1) % NUM_STAGES;
                 phase ^= (stage == 0);
             }
-        }
+        }  // exit persistent loop
 
-        // 最后一个 tile 后不再有下一轮 tmem_empty wait，因此显式补等一次，
-        // 确保 epilogue 结束后才进入 TMEM/barrier 的销毁路径。
+        // 最后一个 tile 后没有下一轮 tmem_empty wait，因此显式补等一次，
+        // 确保两个 CTA 的 epilogue 都已读完最后一个 tile 的 TMEM，
+        // 完成最后一次 tmem_empty phase，再退出 kernel。
         int last_iter = scheduler.current_iter - 1;
         if (last_iter >= 0) {
             uint32_t last_idx = last_iter % NUM_EPILOGUE_STAGES;

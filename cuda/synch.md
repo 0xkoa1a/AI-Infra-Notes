@@ -6,7 +6,7 @@ CUDA 同步需要同时回答三个问题：
 2. 它们此前产生的内存结果是否已经按要求发布和可见？
 3. 如果工作交给了 TMA、Tensor Core 等异步硬件，该异步操作是否已经完成？
 
-这三个问题分别涉及控制同步、内存顺序和异步完成通知。一个同步原语可能只解决其中一部分，不能仅凭名字中出现了 `barrier`、`fence` 或 `wait`，就认为其他问题也自动得到解决。
+这三个问题分别涉及控制同步、内存顺序和异步完成通知。一个同步原语可能只解决其中一部分。
 
 ## 弱内存模型与 happens-before
 
@@ -43,12 +43,6 @@ ready = true;
 
 如果内存模型保证操作 A 的效果必须先于操作 B 被观察到，就称 A **happens before** B。它描述的是程序可以依赖的顺序关系，而不只是墙上时钟所看到的“谁先执行”。
 
-happens-before 通常由以下关系组合而成：
-
-- 同一线程中受保证的程序顺序；
-- 两个参与者之间匹配的同步关系，例如 release 与 acquire；
-- 上述关系的传递闭包。
-
 典型的生产者—消费者关系是：
 
 ```text
@@ -61,34 +55,21 @@ acquire
 消费者读数据
 ```
 
-于是生产者的写入 happens before 消费者的读取。反过来，如果两个并发参与者访问同一数据、至少一方写入，却没有建立所需的 happens-before，程序就不能假设消费者一定看到新值。
-
-### 同步原语的两个基本维度
-
-一个同步原语至少要从两个维度理解：
-
-```text
-控制语义：谁需要 arrive，谁需要 wait，什么时候可以继续？
-内存语义：同步点前后的哪些内存访问被排序，结果对谁可见？
-```
-
-例如 `__syncthreads()` 同时提供 CTA 内的线程集合和相应的内存可见性。split barrier 则把控制过程拆成 `arrive` 与 `wait`，内存语义还可以进一步选择 `release`、`acquire` 或 `relaxed`。
-
-面对异步硬件时还要增加第三个维度：该原语是否真的跟踪异步操作的完成。普通线程 barrier 并不会自动等待 TMA 或 Tensor Core。
+于是生产者的写入 happens before 消费者的读取。
 
 ## Memory proxy（内存代理）
 
 ### proxy 是什么
 
-proxy 是 GPU 内存模型用来区分不同内存访问机制的抽象，可以理解为“访问内存的通道”或“观察内存的方式”。它不是一块新的物理内存，也不一定对应一个独立 cache。
+proxy 是 GPU 内存模型用来区分不同内存访问机制的抽象，可以理解为“访问内存的通道”或“观察内存的方式”。
 
-即使两个操作访问同一个 Shared Memory 地址，如果它们通过不同 proxy 完成，内存模型也不一定自动保证后一种访问已经看到前一种访问的结果。程序必须使用该 proxy 组合规定的同步操作建立顺序。
+当两个操作访问同一个 Shared Memory 地址时，如果它们通过不同 proxy 完成，内存模型不一定自动保证后一种访问已经看到前一种访问的结果。
 
 ### generic proxy 和 async proxy
 
 CUDA 线程执行的普通 load/store 通过 **generic proxy** 访问内存，例如普通的 Shared Memory 和 Global Memory 读写。
 
-TMA 以及部分 Tensor Core 异步操作则由概念上的 **async thread** 执行，并通过 **async proxy** 访问内存。这里的 async thread 不是某个 `threadIdx.x`，而是内存模型对异步硬件执行者的抽象；它与发射该操作的 CUDA 线程相关联，但不会参与该线程块执行的普通线程 barrier。
+TMA 以及部分 Tensor Core 异步操作则由概念上的 **async thread** 执行，并通过 **async proxy** 访问内存。这里的 async thread 是内存模型对异步硬件执行者的抽象；它与发射该操作的 CUDA 线程相关联，但不会参与该线程块执行的普通线程 barrier。
 
 以 TMA Store 的源数据为例：
 
@@ -100,32 +81,22 @@ CUDA threads                          TMA async thread
 generic proxy ───── Shared Memory ───── async proxy
 ```
 
-虽然两边访问的是同一块 SMEM，但“CUDA 线程已经执行完 store”本身不能建立下面的跨代理关系：
+虽然两边访问的是同一块 SMEM，但“CUDA 线程已经执行完 store”不能保证“异步 TMA 线程已经看到该写入”。因此，TMA Store 发射前必须执行 proxy fence，确保此前的 generic proxy 写入被发布给 async proxy。
 
-```text
-generic proxy write  happens-before  async proxy read
-```
 
 ### proxy fence
 
+以 TMA Store 为例。
+
 在 TMA Store 发射前，`fence.proxy.async.shared::cta` 用来把此前的 generic SMEM 写入排在后续 async proxy 访问之前。可以把它理解成把本线程刚写好的 SMEM 数据“发布”给 TMA 所在的 async proxy。
 
-proxy fence：
-
-- 建立指定 proxy、地址空间和作用域之间的内存顺序；
-- 不等待其他 CUDA 线程；
-- 不发射 TMA；
-- 不等待 TMA 完成；
-- 不要求真的把数据复制到另一块缓冲区。
-
 它和普通线程 barrier 不能互相替代：
-
 - proxy fence 处理 generic proxy 与 async proxy 之间的顺序，但只发布执行它的线程此前的写入；
-- CTA barrier 或 named barrier 负责让多个生产线程集合，但本身不能代替 TMA 所要求的跨 proxy 顺序。
+- CTA barrier 或 named barrier 负责让多个生产线程集合，但不能代替 TMA 所要求的跨 proxy 顺序。
 
-同样，某个 barrier 具有 release/acquire 内存语义，也不代表它是“覆盖所有访问机制的万能 fence”。release/acquire、同步作用域和 proxy 是不同维度：前两者说明哪些访问在什么参与者范围内排序，proxy fence 则专门说明跨哪两种访问机制建立顺序。异步操作或特殊操作还必须遵守各自规定的完成与发布协议。
+release/acquire、同步作用域和 proxy 是不同维度：前两者说明哪些访问在什么参与者范围内排序，proxy fence 则专门说明跨哪两种访问机制建立顺序。异步操作或特殊操作还必须遵守各自规定的完成与发布协议。
 
-因此，如果一个 SMEM tile 是多个线程共同写出的，每个生产线程都需要先完成自己的写入并执行 proxy fence，然后所有生产线程集合，最后才由一个线程发射 TMA Store。不能只让最终发射 TMA 的线程执行 fence，因为它不能替其他线程发布写入。
+因此，如果一个 SMEM tile 是多个线程共同写出的，每个生产线程都需要先完成自己的写入并执行 proxy fence，然后所有生产线程集合，最后才由一个线程发射 TMA Store。
 
 完整的发射前关系是：
 
@@ -139,41 +110,6 @@ proxy fence：
 一个线程发射 TMA Store
 ```
 
-### proxy 可见性与异步完成是两件事
-
-proxy fence 只解决“发射 TMA 时能否正确看到源 SMEM”，并不说明 TMA Store 何时完成。发射后的完成状态由 bulk async-group 跟踪：
-
-- `cp.async.bulk.commit_group` 把发射线程此前尚未提交的 bulk async 操作组成一个新的完成组；它不是等待。
-- `cp.async.bulk.wait_group N` 等到至多只剩最近的 `N` 个 group 尚未完成，更早的 group 必须全部完成。
-- `cp.async.bulk.wait_group 0` 等待该线程此前提交的所有 group 完成。
-
-bulk async-group 是 per-thread 的。发射并 commit TMA Store 的线程负责等待自己的 group；其他线程如果要复用相应 SMEM stage，需要由发射线程完成 wait，再通过 CTA/named barrier 把“stage 已可复用”通知给它们。
-
-普通的 `wait_group` 等待完整完成，包括读完源 SMEM 和写完目标 Global Memory。带 `.read` 的形式只要求读完源地址：安全覆盖源 SMEM 只需要读完成，而在 kernel 结束前确认最终输出已经写回，则需要完整完成。
-
-多 stage 流水可以令 `N` 非零，从而允许少量较新的 Store group 保持 in flight。覆盖某个 SMEM stage 前，必须保证之前读取该 stage 的旧 group 已经退出允许保留的 pending 窗口。
-
-可以用下面的表格区分这些操作：
-
-| 操作 | 等待其他线程 | 建立 generic ↔ async proxy 顺序 | 跟踪 TMA Store 完成 |
-|---|---:|---:|---:|
-| CTA/named barrier | 是 | 否 | 否 |
-| `fence.proxy.async.shared::cta` | 否 | 是 | 否 |
-| `cp.async.bulk.commit_group` | 否 | 否 | 建立完成组，但不等待 |
-| `cp.async.bulk.wait_group` | 只阻塞执行它的线程 | 否 | 是 |
-
-因此 TMA Store 的完整同步协议是：
-
-```text
-写 SMEM
-→ proxy fence
-→ 生产线程集合
-→ 单线程发射 TMA Store
-→ 同一线程 commit
-→ 同一线程 wait 到旧 group 已读完相应 SMEM
-→ 线程集合后复用相应 SMEM stage
-```
-
 ## `__syncthreads()`
 
 `__syncthreads()` 是一个 **CTA 内的同步原语**。它保证：
@@ -181,7 +117,7 @@ bulk async-group 是 per-thread 的。发射并 commit TMA Store 的线程负责
 - CTA 内所有参与线程都到达；
 - barrier 之前的相关内存访问，对 barrier 之后的 CTA 线程可见。
 
-这里的参与者是 CUDA 线程。`__syncthreads()` 本身不是 TMA 或 Tensor Core 的完成等待，也不能替代异步硬件要求的 proxy fence。它可以放在各生产线程的 proxy fence 之后，保证负责发射异步操作的线程等到所有生产者都完成发布。
+这里的参与者是 CUDA 线程。它可以放在各生产线程的 proxy fence 之后，保证负责发射异步操作的线程等到所有生产者都完成发布。
 
 以下写法可能会死锁：
 
@@ -488,42 +424,3 @@ arrive.release：我执行到这里了，而且此前的结果已经发布
 反过来，如果后续线程需要读取 barrier 前写入的数据，却没有其他发布机制，就不能只依赖 relaxed arrive。
 
 ---
-
-### `barrier.cluster` 中 arrive/wait 与 release/acquire 的组合
-
-cluster barrier 的典型形式是：
-
-```cpp
-barrier.cluster.arrive.release;
-barrier.cluster.wait.acquire;
-```
-
-其执行过程是：
-
-1. 每个参与者在 `arrive.release` 前完成并发布自己的相关内存操作；
-2. `arrive` 报告当前参与者已到达，但不等待其他 CTA；
-3. `wait` 等待 cluster 中所有参与者完成 arrive；
-4. `wait.acquire` 接收各参与者在 release 前发布的结果；
-5. wait 之后的代码可以安全使用这些结果。
-
-当前教程中的 helper 是：
-
-```cpp
-asm volatile("barrier.cluster.arrive.aligned;\n"
-             "barrier.cluster.wait.aligned;\n" ::: "memory");
-```
-
-这里没有显式写 `.release` 和 `.acquire`，但 `barrier.cluster` 的默认语义分别是：
-
-```cpp
-barrier.cluster.arrive.release.aligned;
-barrier.cluster.wait.acquire.aligned;
-```
-
-`.aligned` 与内存序无关。它要求同一 warp 中的非退出线程以一致方式执行这条 barrier 指令，不能把它理解成更强的 acquire/release。
-
-还要注意，PTX 对 `barrier.cluster.wait` 的可见性承诺明确写着“除异步操作之外”。因此：
-
-- 它可以同步 cluster 中参与线程的到达，并传播其覆盖范围内的普通内存访问；
-- 它不会仅凭自身就等待 TMA、`tcgen05` 等异步工作完成；
-- 它也不能替代异步 proxy fence、mbarrier tx-count、`tcgen05.commit` 或其他专用完成协议。
