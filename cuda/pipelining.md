@@ -54,7 +54,7 @@
 
 ## MMA-epilogue 流水线
 
-MMA 将一整块输出 tile 累加完成后，需要将其写回 global memory。为了隐藏写回开销，也需要流水线。
+MMA 将一整块输出 tile 累加完成后，需要将其写回 global memory。为了隐藏这个开销，也需要流水线。
 
 设：
 - MMA 计算得到一整个输出 tile 的时间为 $T_M$；
@@ -62,9 +62,9 @@ MMA 将一整块输出 tile 累加完成后，需要将其写回 global memory�
 - 从输出 tile 计算完成到对应 buffer 可以被 MMA 复用的延迟为 $T_R$。
 - 流水线总级数为 $S$。
 
-> 对于只单纯 store 的 epilogue 来说，$T_W$ 和 $T_R$ 基本是一回事。但是对于要先执行其他计算（如激活函数）的 epilogue 来说：
+> 对于只单纯把数据从 Shared Memory store 到 Global Memory 的 epilogue 来说，$T_W$ 和 $T_R$ 基本是一回事。但是对于要先执行其他操作（如激活函数）的 epilogue 来说：
 > $$T_R = T_A + T_W$$
-> 其中 $T_A$ 是其他计算的执行时间。
+> 其中 $T_A$ 是其他操作的执行时间。
 
 为了让 epilogue 开销被充分隐藏，需要：
 - 带宽条件：$T_M \ge T_W$
