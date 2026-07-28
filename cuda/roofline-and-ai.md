@@ -25,5 +25,5 @@
 
 降低精度可以提高算术强度：计算量不变，数据量减少。
 - 在 $\mathbf{C} = \mathbf{A} \times \mathbf{B}$ 中，一般 A/B/C 都用 BF16 存储，但累加时累加到 FP32 accumulator 中。
-- 既降低了内存带宽的需求，又提高了计算的效率（近似线性，但有 quantize-dequantize 的开销）
+- 线性地降低了内存流量，又近似线性地提高了峰值计算吞吐量（对 tensor core 来说。但有 quantize-dequantize 的开销）。
 - [MXFP8](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/features/low_precision_training/mxfp8/mxfp8.html)

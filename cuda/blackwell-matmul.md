@@ -45,6 +45,8 @@ CTA 0 TMEM: tile 0 的结果                CTA 1 TMEM: tile 1 的结果
 
 两个 CTA 共享一条 2SM UMMA 的发射过程和 B 的两个半块，但各自使用本地 A，并在本地 TMEM 中得到不同的输出 tile。
 
+Blackwell 2CTA UMMA 的物理接口是“沿 TMEM lane，也就是 M 方向扩展”。因此 A 跟随本地输出行成为私有数据，B 则成为两个 CTA 共享的数据。这个不对称是硬件数据通路选择，不是 GEMM 算法本身的要求。
+
 ### 1.2 数据经过哪些存储层级
 
 ```text
@@ -561,6 +563,12 @@ Epilogue 的任务：先等待 UMMA 完成，然后
 3. 尽早释放 TMEM
 4. 一个线程发射 TMA Store
 5. 两个 CD stage 交替复用
+
+先从 TMEM 读到寄存器，再从寄存器写到 SMEM，然后再写回 global memory。这样可以减少暴露在关键路径上的内存开销（因为 epilogue 和 umma 是串行的）。
+
+TMA 不能直接从 tensor memory 搬到 global memory。
+
+epilogue 里没有 warp specialization，但也用了两级流水线，这里是异步的 TMA 和 warp 在并行，而不是 warp 之间在并行。
 
 ```cpp
     } else if (warp_idx >= 4) {

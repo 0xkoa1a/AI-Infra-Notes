@@ -667,6 +667,30 @@ r1 上的 t7
 
 因此，DeepEP Low-Latency 模式可以概括为：用容量有上界、地址稳定但不完全紧凑的 Buffer，换掉精确 Shape 同步和分层转发带来的固定延迟，并让 Expert 输入直接按 Expert 组织。它优化的是一次 Decode 通信尽快完成，而不是大批 token 下的最高持续吞吐。
 
+---
+
+## AllToAll 与 AllGather 的通信量
+
+设每个 Rank 持有 $S$ 个 token，Hidden Size 为 $H$，EP Group 有 $P$ 个 Rank，Router 采用 Top-$k$。以下比较每 Rank 在 Dispatch 中发送的 Hidden State 数据量，不计元数据与 Combine。
+
+AllToAll 按 Routed Token Instance 发送。同一个 token 的 $k$ 个路由结果分别计数，且目标均匀分布时，本地的 $1/P$ 不经过网络：
+
+$$V_{\text{a2a}}\approx kSH\frac{P-1}{P}$$
+
+若改为 AllGather，每个 Rank 将原始 token 广播给其余 Rank，再由接收端保留本地 Experts 需要的 token：
+
+$$V_{\text{ag}}\approx SH(P-1)$$
+
+两者之比为：
+
+$$\frac{V_{\text{a2a}}}{V_{\text{ag}}}\approx\frac{k}{P}$$
+
+因此，当 $k/P>1$ 时，AllGather 的通信量更小。
+
+这里的 $V_{\text{a2a}}$ 是未去重口径：同一个 token 路由到多个目标 Rank，就按多个 Routed Token Instance 计算。DeepEP 的去重是节点级去重，即多个目标位于同一个远端节点时，跨节点只传一份，再在节点内转发；它不是 Per-Rank 去重，不能直接消去上式中的 $k$。分析 DeepEP 的实际跨节点流量时，应按目标节点集合另行计算。
+
+一般都是单机可能选择AG，多机基本上都是dispatch，毕竟k不会太大。
+
 ## Hybrid-EP
 
 Hybrid-EP 是 DeepEP 中一种硬件感知的 EP 通信实现：保持“同号 GPU 间 RDMA、节点内 NVLink 转发”的分层通信方式，但用 TMA、persistent kernel、warp specialization 和 chunk pipeline 重构 dispatch/combine，从而减少通信占用的 SM，并将 RDMA、NVLink 以及 permute/unpermute 更细粒度地重叠起来。
