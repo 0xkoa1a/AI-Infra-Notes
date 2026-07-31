@@ -1,8 +1,6 @@
 
 # 数学建模
 
-在数学建模的章节里就引入流水线。但是只考虑 MMA-epilogue 流水线，不考虑 epilogue-硬件发送 buffer 流水线（为了简化讨论）。
-
 建模的目标是清晰、简单、intuitive 地表达 idea
 - 不对整个三级流水线的所有细节进行建模
 - 方法是 burst-gap 排列问题，目标是最小化 epilogue 的执行时间 $T_{epi}$。
@@ -16,11 +14,22 @@
 - 对比两种叙事：
     - 只看 L2 周期，原来的调度是一个 drain dominate scenario，收益机制是把原本处于周期外的未来的 L1 计算提前放进周期里进行，从而与关键路径中的 epilogue 重叠。
         - *For fixed communication volume and drain rate, **scheduling cannot shorten this period**. It can, however, determine how much of the period is useful computation and how much is sender-visible issue stall.*
-        - 这个链条初见有点绕。
+        - 这个链条初见有点绕。它不 **intuitive**。
         - L2 周期的 drain dominate 只是一个局部现象。scheduling 是在整个 L1 + L2 的 expert wave 尺度上进行的，所以只看局部 L2 才会有 scheduling cannot shorten this period 的结论。
-        - “interleave 的调度不能缩短 L2 周期，however，它可以...”听起来像是在承认 scheduling 的弱点，但这个弱点其实并不存在。这种叙述弱化了调度方法的贡献。
+        - “interleave 的调度不能缩短 L2 周期，however，它可以...”**是一个让步的叙述**，听起来像是在承认 scheduling 的弱点（做不到 A 而只能做 B），但这个弱点其实并不存在。让步的语气直接传达到读者的无意识中，容易形成“调度策略只是 minor improvement”的心理暗示，让读者在无意识中低估调度的贡献。
     - 看整个 expert wave 周期，buffer 在 L2 连续发射阶段总是非空，但是在 L1 连续发射阶段长期空。收益机制是重排 L1 + L2 周期内的 burst-gap 顺序，平滑化 L2 burst，从而减少反压。
-        - 因果链条更加 straightforward，减少反压 -> 减少 epilogue 执行时间 > 减少关键路径上的 stall > 总的执行周期缩短
+        - 因果链条更加 straightforward：减少反压 -> 减少 epilogue 执行时间 > 减少关键路径上的 stall > 总的执行周期缩短
+- 建模部分
+    - 重点考察硬件 buffer 本身，对这个硬件 buffer 做建模，分析它的性质。说明硬件 buffer 反压 -> 增加 epilogue 执行时间 -> 造成 tensor core MMA stall 的因果机制，但不对复杂的三级流水线进行完整建模。
+        - 硬件 buffer 是论文的核心发现，而 MMA-epilogue 流水线是大家已经熟知的。重点描述论文发现的新 buffer，少着墨于大家熟知的 MMA-epilogue 的部分。
+        - 仍然需要说明硬件 buffer 的反压导致 tensor core MMA stall 的机制，只是可以仅定性描述，而不是完整地建一个包罗整个三级流水线的模型（写者难建模、读者也难理解、费篇幅，而且可能吃力不讨好）。
+    - 给出一个指标，作为最优化的目标函数。这个指标的构造需要追求：
+        - 最好能够**具有因果性**（而不仅仅是相关性）地衡量 buffer 会不会反压，即它最好是一个决定性的指标（决定反压是否发生），而不仅仅是一个描述性的指标。
+            - 是反压的原因。不是反压的结果、性质、tautology（如 T_{iss}）。
+        - 构成这个指标的变量能够反映我们采用的 kernel 设计方法
+            - 我们的 kernel 设计方法是重排 burst-gap 顺序，从而平滑化 burst。它是一个排列问题。
+        - Simple, **Intuitive**：读者一看就知道：这个指标高了/低了会显然地导致反压更严重、采用论文的 kernel 设计方法能显然地改善这个指标。
+    - [我尝试从方差的角度定义了一个指标](./XStage-modeling.md)，但它有一些问题（更多是描述性指标）。从**瞬时速率**的角度构造指标或许更优。
 
 
 ## Setup
