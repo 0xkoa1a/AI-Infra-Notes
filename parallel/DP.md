@@ -1,0 +1,210 @@
+# Data Parallelism
+
+Data Parallelism（DP）的核心，是让不同 Rank 使用相同模型处理不同训练样本，再将各 Rank 的局部梯度归约成同一个全局梯度。
+
+DP 沿 Batch 维度切分数据，不切分单个样本的模型计算。每个 Rank 都保存完整参数、完整梯度和完整优化器状态，因此模型及其训练状态必须能够放入单卡显存。
+
+---
+
+## 统一符号
+
+假设有 $p$ 个 DP Rank，Global Batch Size 为 $B$。各 Rank 的 Local Batch Size 相同：
+
+$$B_{\text{local}}=\frac{B}{p}$$
+
+模型参数记为：
+
+$$\theta\in\mathbb{R}^{P}$$
+
+其中 $P$ 是参数元素总数。参数对应的梯度为：
+
+$$g\in\mathbb{R}^{P}$$
+
+设梯度通信时每个元素占 $b_g$ 字节，则完整梯度的数据量为：
+
+$$N_G=Pb_g$$
+
+下文通信量均指一次 Optimizer Step 中，每 Rank 实际经网络发送的数据量，不计算发送给自己的部分。
+
+---
+
+## Batch-Sharded Layout 与模型复制
+
+训练开始时，每个 Rank 持有相同参数：
+
+```text
+Rank 0：完整参数 θ
+Rank 1：完整参数 θ
+...
+Rank p-1：完整参数 θ
+```
+
+Distributed Sampler 将一个 Global Batch 切成互不重叠的 Local Batch：
+
+$$X=[X_0;X_1;\ldots;X_{p-1}]$$
+
+其中：
+
+$$X_r\in\mathbb{R}^{B_{\text{local}}\times\cdots}$$
+
+第 $r$ 个 Rank 只对 $X_r$ 执行本地 Forward 和 Backward。若本地 Loss 是 Local Batch 上的平均值：
+
+$$L_r=\frac{1}{B_{\text{local}}}\sum_{x\in X_r}\ell(x;\theta)$$
+
+则本地梯度为：
+
+$$g_r=\nabla_\theta L_r$$
+
+Forward 和大部分 Backward 都不需要访问其他 Rank 的激活。不同 Rank 计算的是不同训练样本对同一组参数的梯度贡献。
+
+DP 与 TP 的区别在于：
+
+* TP 将一次模型计算拆到多个 Rank，用于切分参数和单个样本的计算；
+* DP 在每个 Rank 上执行完整模型，只将训练样本分给不同 Rank；
+* DP 可以提高训练吞吐，但不会降低单个模型副本占用的参数、梯度和优化器状态显存。
+
+---
+
+## Gradient AllReduce
+
+所有 Local Batch 大小相同时，Global Batch 的平均 Loss 为：
+
+$$L=\frac{1}{p}\sum_{r=0}^{p-1}L_r$$
+
+对应的全局平均梯度为：
+
+$$g=\nabla_\theta L=\frac{1}{p}\sum_{r=0}^{p-1}g_r$$
+
+每个 Rank 在 Backward 中首先得到自己的 $g_r$，然后对完整梯度执行 AllReduce Sum：
+
+$$g_{\text{sum}}=\sum_{r=0}^{p-1}g_r$$
+
+再除以 DP Degree：
+
+$$g=\frac{g_{\text{sum}}}{p}$$
+
+具体实现可以在 AllReduce 前缩放、AllReduce 后缩放，或者由通信与训练框架共同完成平均；关键是每个 Rank 最终必须获得相同的全局平均梯度 $g$。
+
+随后所有 Rank 使用相同 Optimizer State 执行相同更新：
+
+$$\theta' = \operatorname{Optimizer}(\theta,g)$$
+
+只要更新前的参数和优化器状态相同，并且每个 Rank 使用相同的归约梯度，更新后的参数就继续保持一致。因此不需要在每个 Optimizer Step 后再次 Broadcast 参数。
+
+如果不同 Rank 的 Local Batch 大小不同，简单计算 $\frac{1}{p}\sum_r g_r$ 不再等价于所有样本上的平均梯度。此时需要按每个 Rank 的有效样本数加权，或者保证各 Rank 使用相同大小的 Local Batch。
+
+---
+
+## 一组 DP 训练 Step 的完整过程
+
+```text
+Global Batch
+        │
+        ▼
+Distributed Sampler
+        │
+        ├── Rank 0：Local Batch X_0
+        ├── Rank 1：Local Batch X_1
+        │   ...
+        └── Rank p-1：Local Batch X_{p-1}
+                │
+                ▼
+        各 Rank 独立执行 Forward
+                │
+                ▼
+        各 Rank 独立执行 Backward
+                │
+                ▼
+        Gradient Bucket AllReduce
+                │
+        每 Rank 得到相同的全局平均梯度 g
+                │
+                ▼
+        各 Rank 执行相同 Optimizer Step
+                │
+        每 Rank 得到相同的新参数 θ'
+```
+
+语义上，可以把 DP 理解为在 Backward 完成后对完整梯度执行一次 AllReduce。实际实现通常不会等待所有梯度都生成后再发起一个巨大 Collective，而是将参数梯度组织成多个 Gradient Bucket。
+
+Backward 按计算图的反方向逐步生成梯度。一个 Bucket 中的所有参数梯度都 Ready 后，就可以立即异步发起该 Bucket 的 AllReduce，同时继续计算尚未完成的 Backward。
+
+AllReduce 只是将不同 Rank 的样本梯度合并起来，不交换不同 Rank 的 Forward 激活，也不把 Local Batch Gather 成完整 Global Batch。
+
+---
+
+## DP 的通信量与通信计算重叠
+
+一次 Optimizer Step 需要同步完整参数梯度，数据量为：
+
+$$N_G=Pb_g$$
+
+使用 Ring AllReduce 时，每 Rank 的发送量为：
+
+$$V_{\text{DP, step}}=2\frac{p-1}{p}N_G$$
+
+其中 ReduceScatter 和 AllGather 各发送：
+
+$$\frac{p-1}{p}N_G$$
+
+当 $p=1$ 时：
+
+$$V_{\text{DP, step}}=0$$
+
+实现将梯度切成 $K$ 个 Bucket。若第 $k$ 个 Bucket 的大小为 $N_k$，且：
+
+$$\sum_{k=0}^{K-1}N_k=N_G$$
+
+则所有 Bucket 的 Ring AllReduce 总发送量仍然是：
+
+$$\sum_{k=0}^{K-1}2\frac{p-1}{p}N_k
+=2\frac{p-1}{p}N_G$$
+
+因此 Gradient Bucket 只改变通信的粒度、启动次数和重叠时机，不改变理想字节数。
+
+Bucket Size 存在折中：
+
+* Bucket 较小：梯度生成后可以更早发起通信，但 Collective 数量增加，更容易受到 Latency 和 Launch Overhead 限制；
+* Bucket 较大：单次通信更容易达到链路带宽，但需要等待更多梯度 Ready，通信与 Backward 的重叠开始得更晚。
+
+一组 DP Step 的时间可以粗略写成：
+
+$$T_{\text{step}}\approx
+T_{\text{forward}}+T_{\text{backward}}+T_{\text{optimizer}}+T_{\text{comm, exposed}}$$
+
+$T_{\text{comm, exposed}}$ 是没有被 Backward 掩盖的通信时间。靠近输出侧的参数梯度较早产生，其 AllReduce 通常可以与后续 Backward 重叠；靠近输入侧的最后几个 Bucket 产生较晚，更容易直接落在 Step 的关键路径上。
+
+DP 的通信量由完整梯度大小 $N_G$ 决定，与 Local Batch Size 无关。增大 Local Batch 会增加每 Rank 的计算量，使相同的梯度通信更容易被计算掩盖，但不会减少每个 Optimizer Step 需要同步的梯度字节数。
+
+使用 Gradient Accumulation 时，设每个 Rank 连续计算 $a$ 个 Micro Batch：
+
+* 如果前 $a-1$ 个 Micro Batch 只在本地累积梯度，最后一个 Micro Batch 才执行 AllReduce，则每个 Optimizer Step 的通信量仍为 $2\frac{p-1}{p}N_G$；
+* 如果每个 Micro Batch 都执行一次 AllReduce，则每个 Optimizer Step 的通信量变成 $2a\frac{p-1}{p}N_G$。
+
+---
+
+## DP 的性能瓶颈
+
+**模型状态复制**：每个 Rank 都保存完整参数、梯度和优化器状态。DP 不会降低单卡模型状态显存；如果完整训练状态无法放入单卡，需要 TP、PP、ZeRO 或 FSDP 等其他分片方案。
+
+**Strong Scaling**：固定 Global Batch $B$，随着 $p$ 增大：
+
+$$B_{\text{local}}=\frac{B}{p}$$
+
+每 Rank 的 Forward 和 Backward 计算量下降，但每 Rank 仍要同步大小为 $N_G$ 的完整梯度。Local Batch 过小时，GEMM 利用率下降，计算可用于掩盖通信的时间也减少，扩展效率会快速恶化。
+
+**Weak Scaling**：固定 Local Batch，并让 Global Batch 随 $p$ 增大。每 Rank 的计算量保持稳定，而 Ring AllReduce 的发送量逐渐接近：
+
+$$\lim_{p\rightarrow\infty}V_{\text{DP, step}}=2N_G$$
+
+这种方式通常具有更好的硬件扩展效率，但更大的 Global Batch 可能改变优化过程，需要调整 Learning Rate，并受到模型收敛和有效 Batch Size 上限约束。
+
+**跨节点通信**：节点内可以使用 NVLink 或 NVSwitch，跨节点则受 RDMA 网络带宽和拓扑影响。梯度 AllReduce 横跨多个节点时，慢链路和分层 Collective 的调度可能成为主要瓶颈。
+
+**Bucket 尾部与启动开销**：最后产生的 Bucket 难以与 Backward 重叠；Bucket 过小又会增加 Collective 启动次数。判断性能时应区分总通信时间和真正暴露在 Step 关键路径上的通信时间。
+
+**Rank 不均衡**：一次 Gradient AllReduce 只有在所有 Rank 都到达后才能完成。某个 Rank 的数据加载、Forward 或 Backward 较慢，会让其他 Rank 等待并形成 Straggler Tail。
+
+推理阶段的 DP 含义不同：每个 Replica 保存完整模型，由请求路由器将不同请求或 Batch 分给不同 Replica。Replica 之间通常没有逐层 Collective，因此推理 DP 提升的是集群聚合吞吐，不能直接降低单个请求的模型计算延迟。
+
+ZeRO 和 FSDP 会进一步切分参数、梯度或优化器状态，并引入 ReduceScatter、AllGather 等通信。它们属于 Sharded Data Parallelism，不在本文展开。
