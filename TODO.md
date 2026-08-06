@@ -1,5 +1,4 @@
+magi attn 独占 SM
+如果训练不用多机器 不用占SM的特化
 
-
-1. blackwell fa4 对照代码看懂 pipeline, **epilogue** 的 sub-tile 有多大
-2. fa3
-
+RDMA 需要读 flag 需不需要 SM 去做？
