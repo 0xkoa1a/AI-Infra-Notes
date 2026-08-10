@@ -271,6 +271,8 @@ $$C=\left\lceil\text{Capacity Factor}\times\frac{kT}{E}\right\rceil$$
 
 Expert Placement 不应只保证每个 Rank 的 Expert 数相同，还要避免把多个热门 Experts 放在同一 Rank。跨节点 EP 还要尽量把高频流量留在节点内，并根据 NVLink、NVSwitch 和节点间网络规划 EP Group。
 
+Replication 与 Placement 的具体算法见 `EPLB.md`。
+
 ---
 
 ## Decode 阶段的小 Batch 问题
