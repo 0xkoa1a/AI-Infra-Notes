@@ -271,7 +271,7 @@ $$C=\left\lceil\text{Capacity Factor}\times\frac{kT}{E}\right\rceil$$
 
 Expert Placement 不应只保证每个 Rank 的 Expert 数相同，还要避免把多个热门 Experts 放在同一 Rank。跨节点 EP 还要尽量把高频流量留在节点内，并根据 NVLink、NVSwitch 和节点间网络规划 EP Group。
 
-负载均衡问题本身（优化目标、纯重排的下界、手段谱系）见 `load-balancing/background.md`；两条具体路线分别见 `load-balancing/EPLB.md`（基于历史统计、周期性离线求解）与 `load-balancing/UltraEP.md`（基于精确负载、逐层实时求解）。
+负载均衡问题本身（优化目标、纯重排的下界、手段谱系）见 `load-balancing/background.md`；四条具体路线分别见 `load-balancing/EPLB.md`（基于历史统计、周期性离线求解）、`load-balancing/UltraEP.md`（基于精确负载、逐层实时求解）、`load-balancing/MoonEP.md`（把每 Rank 负载钉成常量的 EP 通信库）与 `load-balancing/LPLB.md`（离线定副本拓扑、逐 batch 解 LP 定分流）。
 
 ---
 
