@@ -5,7 +5,7 @@ EPLB（Expert Parallelism Load Balancer）是 DeepSeek 开源的 EP 负载均衡
 
 ## group-limited routing
 
-DeepSeek-V3 的 Router 有一个额外约束，它是后续拓扑感知放置策略的前提，值得单独说清。
+DeepSeek-V3 的 Router 有一个额外约束。
 
 $E$ 个 Expert 被划分为若干个 group。Router 不是在全部 $E$ 个 Expert 中自由选 Top-$k$，而是先选出有限数量的 group，再在这些 group 内部选 Expert：
 
