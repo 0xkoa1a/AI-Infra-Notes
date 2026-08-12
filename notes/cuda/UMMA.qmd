@@ -1,0 +1,115 @@
+---
+title: "UMMA"
+---
+
+UMMA 是 Blackwell SM100 Tensor Core 的异步矩阵乘加机制，对应 `tcgen05.mma` 指令族。
+
+如果没有tensor memory的话，在mma和epilogue之间做warp specialization会比较麻烦，因为累加结果会存在执行mma的warp的寄存器中，而它们是私有的，mma需要将累加结果从寄存器搬到shared memory，然后epilogue warps才能使用。
+
+在 Hopper WGMMA 中，累加器主要由发射计算的 Warp Group 保存在寄存器中。较大的输出 tile 会产生较高的寄存器压力，并使计算发射者、累加器所有者和 Epilogue 紧密绑定。Blackwell 增加了独立的 Tensor Memory（TMEM）：UMMA 从 Shared Memory 或 TMEM 读取操作数，将累加结果写入 TMEM，之后再由 Epilogue Warp 读取。
+
+因此，MMA Warp 可以持续发射 Tensor Core 计算，Epilogue Warp 则在结果完成后独立消费 TMEM，更适合 Warp Specialization、大 tile 和多 stage 流水。
+
+```text
+Global Memory
+    ↓ TMA
+Shared Memory
+    ↓ UMMA
+Tensor Memory
+    ↓ tcgen05.ld
+Registers
+    ↓ Epilogue
+Shared Memory / Global Memory
+```
+
+***
+
+## UMMA
+
+以矩阵乘加为例，一组 UMMA 操作完成：
+
+```text
+D = A × B + D
+```
+
+一次常见的 UMMA 输入包括：
+- A、B tile 的 Shared Memory descriptor
+- 累加器 D 在 TMEM 中的目标地址
+- UMMA instruction descriptor
+- 当前操作是初始化 D，还是在已有 D 上继续累加
+- Block-scaled 低精度计算所需的 scale factor 地址和元数据
+
+Shared Memory descriptor 描述 A/B tile 在 SMEM 中的地址、stride、major mode 和 swizzle。Instruction descriptor 描述本条 UMMA 的数据类型、累加类型和 tile shape。部分 UMMA 形式也允许 A 来自 TMEM，但常见 GEMM Mainloop 使用 SMEM 中的 A、B。
+
+UMMA 不会把计算结果直接返回到普通 CUDA 寄存器。结果被写入指定的 TMEM 区域：第一个 K-step 初始化累加器，后续 K-step 在同一位置继续累加，直到完整 K 维计算结束。
+
+`cta_group::1` 由一个 CTA 使用本 SM 的 TMEM；`cta_group::2` 由一个 CTA Pair 协作执行，底层由 Leader CTA 发射，两个 CTA 的结果分别写入各自 SM 上的 TMEM。CTA Pair 可以共同完成更大的逻辑 UMMA tile，但每个 CTA 仍消费自己的本地结果。
+
+UMMA 是异步的。发射 `tcgen05.mma` 只表示计算已经进入 Tensor Core Pipeline，不能据此认为输入 SMEM 已经可以覆盖，也不能认为 TMEM 结果已经可以读取。
+
+在 TMA Producer 和 UMMA Consumer 分离的流水中，UMMA 发射前先等待 TMA 对应的 `full` mbarrier phase，确认 A/B tile 已经写入 SMEM。随后执行 `tcgen05.fence::after_thread_sync`，把后续 tcgen05 操作排在线程间同步点之后，再发射 UMMA。
+
+流水开始前，需要先初始化并发布 `empty`、`tmem_full` 等 mbarrier，之后才能让 `tcgen05.commit` 向它们提交完成通知。
+
+UMMA 使用 `tcgen05.commit` 建立完成点：
+- `commit` 将此前发射的 UMMA 操作关联到一个 mbarrier。
+- `commit` 本身不等待计算完成。
+- 此前的 UMMA 真正完成后，硬件才对目标 mbarrier 执行 arrival。
+- 消费者通过等待对应 phase，判断 SMEM 是否可以复用或 TMEM 结果是否可以读取。
+
+在多 stage Mainloop 中，通常需要区分两个完成条件：
+- UMMA 已经读完当前 A/B stage，TMA Producer 可以覆盖该 SMEM stage。
+- 最后一个 K-step 已经完成，Epilogue 可以读取完整的 TMEM 累加结果。
+
+前者通常由 `empty` barrier 表示，后者通常由 `tmem_full` barrier 表示。它们保护的资源不同，不能只用一个普通 CTA barrier 代替。
+
+完整 UMMA 流程如下：
+
+```text
+初始化并发布 UMMA completion mbarrier
+→ TMA 将 A/B tile 搬入 SMEM
+→ UMMA Warp 等待 full mbarrier phase
+→ 执行 tcgen05.fence::after_thread_sync
+→ 发射一组 tcgen05.mma
+→ tcgen05.commit 将这组 UMMA 关联到 mbarrier
+→ Tensor Core 异步读取 SMEM、计算并更新 TMEM
+→ UMMA 完成后，硬件对 mbarrier arrival
+→ TMA Producer 等待 empty phase 后复用输入 stage
+→ 最后一个 K-step 完成后，Epilogue 等待 tmem_full phase
+```
+
+这里需要区分三种动作：`fence` 负责排序，不等待计算完成；`commit` 建立异步完成点，也不等待；`wait` 才会等待对应的 barrier phase 完成。
+
+***
+
+## TMEM 读取与复用
+
+TMEM 是 Blackwell SM100 上专门服务于 Tensor Core 的片上存储。它不是普通指针可以直接解引用的内存，需要通过 `tcgen05.alloc`、`tcgen05.ld/st` 和 `tcgen05.dealloc` 等专用操作管理。
+
+Kernel 开始时，由一个 Warp 集体分配所需的 TMEM columns，并把得到的 TMEM 地址提供给 UMMA 和 Epilogue。TMEM 容量有限，因此不同输出 tile 或 accumulator stage 通常循环复用同一片区域。
+
+Epilogue 读取 UMMA 输出时，先等待 `tmem_full` barrier，确认完整累加结果已经写入 TMEM。若等待与 TMEM Load 由不同线程执行，还要执行 `tcgen05.fence::after_thread_sync`，保证后续的 `tcgen05.ld` 排在该同步点之后。
+
+`tcgen05.ld` 将 TMEM 数据异步加载到当前 Epilogue Warp 的寄存器。发射之后必须执行 `tcgen05.wait::ld`，才能使用寄存器结果进行类型转换、Bias、Activation 或写入 Shared Memory。mbarrier wait 证明 UMMA 已经完成，但不能替代 `tcgen05.wait::ld`；两者等待的是不同的异步操作。
+
+所有 Epilogue 线程读完某个 TMEM stage 后，需要通知 MMA Warp 该区域可以覆盖。通知之前执行 `tcgen05.fence::before_thread_sync`，把本线程此前的 TMEM Load 排在线程间同步动作之前；随后由消费者集合对 `tmem_empty` barrier arrival。MMA Warp 等待该 phase，再执行 `tcgen05.fence::after_thread_sync`，之后才能让下一输出 tile 写入同一 TMEM 区域。
+
+`tcgen05.fence::before_thread_sync` 和 `tcgen05.fence::after_thread_sync` 都不是完成等待。前者把本线程此前的 tcgen05 操作排在同步点之前，后者把本线程后续的 tcgen05 操作排在同步点之后；异步 TMEM Load 的寄存器结果仍由 `tcgen05.wait::ld` 跟踪。
+
+完整 TMEM 消费流程如下：
+
+```text
+UMMA commit 对 tmem_full mbarrier 建立完成点
+→ UMMA 完成后，硬件执行 arrival
+→ Epilogue Warp 等待 tmem_full phase
+→ 执行 tcgen05.fence::after_thread_sync
+→ 发射 tcgen05.ld，将 TMEM 结果加载到寄存器
+→ 执行 tcgen05.wait::ld
+→ 在寄存器中执行类型转换和 Epilogue
+→ 执行 tcgen05.fence::before_thread_sync
+→ Epilogue 线程对 tmem_empty barrier arrival
+→ MMA Warp 等待 tmem_empty phase
+→ 执行 tcgen05.fence::after_thread_sync
+→ 下一输出 tile 复用同一 TMEM stage
+→ Kernel 结束前集体释放 TMEM
+```

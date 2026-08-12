@@ -1,0 +1,99 @@
+---
+title: "FlashAttention v4：SM100 Forward Kernel 导读"
+---
+
+[MagiAttention 导读](https://gin-sin.github.io/magiattention-blackwell-tutorials/index.html)
+
+## 一个 CTA 中的 warp 角色
+
+默认配置有 16 个 warp，也就是 512 个线程。
+
+| Warp ID | 角色 | 主要工作 |
+|---|---|---|
+| 0–3 | Softmax 0 | 处理 query stage 0 的 128 行 S |
+| 4–7 | Softmax 1 | 处理 query stage 1 的 128 行 S |
+| 8–11 | Correction | 根据新的 row max 修正 TMEM 中的旧 O |
+| 12 | MMA | 分配 TMEM，发出 QK/PV UMMA |
+| 13 | Epilogue | 将 correction 写入 sO 的结果搬到 GMEM |
+| 14 | Load | 发起 Q/K/V 的 TMA load |
+| 15 | Empty 或 CLC | 默认不参与数据计算；启用 CLC 时负责调度 |
+
+每四个 softmax/correction warp 可以看成一个 128-thread warpgroup。128 个线程与一个 stage 的 128 个 Query rows 对应，所以 softmax 的基本 ownership 是“一线程负责一行”，而不是一个 warp 合作处理一行。
+
+warp specialization 也用于动态重分配寄存器。以典型的 SM100、2CTA、非 causal、head dimension 128 配置为例，两组 Softmax、Correction 和最后一组轻量角色的每线程寄存器上限分别是 176、176、88 和 72，总和保持为 512。`setmaxregister_decrease(72)` 表示把当前 warp 的上限降到 72，而不是减去 72；释放的寄存器进入 CTA 内部池，两个 Softmax warpgroups 再把自己的上限提高到 176。MMA accumulator 位于 TMEM，因此发射 UMMA 的 warp 不需要像 Softmax 那样保留大量寄存器；它与 Load、Epilogue、Empty warp 同属最后一个 warpgroup，四个 warp 虽然角色不同，仍执行相同的寄存器设置。
+
+
+## Tile 层次与 CTA ownership
+
+kernel 以一大片连续的 Query rows 作为工作单元，再沿行方向分给同一 cluster 中的两个 CTA。典型的一次联合 QK 覆盖 256 条 Query 和 128 个 key positions；CTA0、CTA1 各持有其中 128 条 Query，以及这些行对应的完整 S、P、O。也就是说，联合矩阵乘扩大的是总体行数，计算结果仍按 Query 行落在各自 CTA 的 TMEM 中。
+
+两个 CTA 推进同一个逻辑 K/V block，但不会在 SMEM 中各复制一整份。2CTA UMMA 把右操作数沿输出列方向分给两边：QK 的右操作数是 $K^T$，所以 K 沿 key positions 对半分，每个 CTA 保存 64 个 positions、完整 head dimension；PV 的右操作数是 V，所以 V 沿 value head dimension 对半分，每个 CTA 保存全部 128 个 positions、半个 value dimension。联合 UMMA 会同时读取两边的 contribution，因此每个 CTA 最终仍得到自己 128 条 Query 对应的完整列宽结果。这里的“对半”指逻辑坐标；实际 SMEM 地址还会经过 UMMA layout 和 swizzle。
+
+每个 CTA 内又有 2 个 stage，同时保留两套 Query 及其 S/P/O 状态。它们处理相邻的 Query 区域，并由两组 softmax warps 分别负责。Tensor Core 在一套状态上执行 QK 或 PV 时，另一套状态可以进行 Softmax、输出修正或数据搬运；随后两套状态交换位置，形成稳定的交错流水线。
+
+整个 CTA pair 中只有 leader CTA 发射联合 UMMA：Q/P 和结果按 Query 行分片，K/V 按右操作数的输出列分片，两个 CTA 各自完成本地 Softmax、correction 和写回，再用 2 个 stage 交错推进。
+
+***
+
+## Buffer 如何组织
+
+SMEM 主要承担 TMA 的目的地。每个 CTA 保留两份 Q，它们在整个 K/V 循环中不变；K 和 V 使用同一个多槽 ring，按 `K0, V0, K1, V1, ...` 的事件流轮转，每个槽在被 Tensor Core 消费后才能重新装入。
+
+```text
+SMEM:  [ Q stage 0 ][ Q stage 1 ] [ K/V ring ... ] [ O stage 0 ][ O stage 1 ]
+TMEM:  [ S0 ↔ P0 ][ S1 ↔ P1 ]     [ FP32 O0 ]      [ FP32 O1 ]
+```
+
+TMEM 保存计算过程中寿命较长的状态。QK 先写入 S；Softmax 把 S 读到寄存器，完成 mask、max、exp 和 sum 后，再把低精度 P 重叠写回同一片 TMEM workspace。随后 PV 消费 P，下一轮 QK 才覆盖该区域。O accumulator 独占另一片 TMEM，并以 FP32 跨多个 K/V block 累加；每行少量的 max、sum 和缩放因子留在寄存器或小块 SMEM 中。
+
+这些 layout 不是普通 row-major 数组。SMEM 会按异步 copy 和 UMMA 的取数方式 swizzle，TMEM 也按 Tensor Core 的 lane/column ownership 排列；源码里的不同 tensor view 只是把同一片物理存储解释成当前算子需要的坐标系。2CTA 并不会合并两边的 SMEM 或 TMEM，联合指令产生的两半结果始终落在各自 CTA 的本地存储中。
+
+最终 O 先落到每 CTA 两个 SMEM output slots，再由独立 warp 发出异步 store。所以一个 2CTA cluster 实际有四份本地输出片段。store 一旦读完某个源槽，该槽就可以复用，数据继续写往 GMEM 的过程可以和下一 work tile 的整个 KV inner loop 重叠；若 store 落后，反压只会卡住下一次试图覆盖同一槽的 correction。
+
+***
+
+## 完整流水线与同步
+
+各角色不是做完一轮后全 CTA 集体换步，而是长期运行在自己的轨道上。同步附着在具体 buffer slot 上：生产者等该槽可复用，写入并确认异步操作完成后发布 ready；消费者等 ready，读完后再归还槽。ring 地址循环使用时还带一个 generation bit，用来区分“这一次 ready”和上一圈遗留的 ready。
+
+一个 work tile 的 Tensor Core 主线可以压缩为：
+
+```text
+prologue:  QK(stage 0, K0) → QK(stage 1, K0)
+
+steady:    PV(stage 0, Vj) → QK(stage 0, Kj+1)
+        →  PV(stage 1, Vj) → QK(stage 1, Kj+1)  → repeat
+
+drain:     PV(stage 0, Vlast) → PV(stage 1, Vlast)
+```
+
+Load warp 在前方装入两份 Q，并沿 K/V ring 尽量预取；ring 满时等待 Tensor Core 归还槽。QK 完成一个 stage 的 S 后立即唤醒对应 Softmax，而不等另一个 stage。在 2CTA 模式下，这个完成事件来自一次联合 UMMA，因此两边 CTA 的本地 Softmax 都由同一次计算推进；只涉及行统计和最终写回的同步仍留在各自 CTA 内部。
+
+对每个 stage，Softmax 先读出 S 并得到新的 row max，尽早把旧 O 所需的缩放比例交给 correction；自己继续计算 exp 并写 P。PV 的启动条件不是“Softmax 全部结束”，而是两个条件同时满足：P 的前段已经写好，旧 O 也已经缩放完、可以继续累加。PV 随即消费 P 的前段，Softmax 同时补写尾段；Tensor Core 真正走到尾段时才检查它是否 ready。下一轮 QK 排在本 stage 的 PV 之后，因此此时覆盖 S/P workspace 也是安全的。
+
+> 在稳态循环中，PV 计算出 O 后不需要通知 correction warp，因为 correction 等待的是后续的 softmax warp 的 stats_ready 信号（它在执行顺序上必然在 PV 之后）。
+> QK 也不需要等待旧 S 已经被 softmax 读取完成，因为它在旧 PV 之后才执行，此时 softmax 早就读完了旧 S。 
+
+```text
+QK complete → S ready → Softmax ── row scale ──→ correct old O ── O safe ─┐
+                              └─ P prefix ready ────────────────────────────┤
+                                                                           ▼
+                                                                     PV can start
+                              └─ P tail ready ──→ PV crosses split
+```
+
+默认路径没有在两组 Softmax 之间设置显式顺序：warp 0–3 和 4–7 共用同一份 loop，只通过一个 warp-uniform 的 stage 值选择各自状态。它们在依赖关系上彼此独立，但指数计算会争用有限的 MUFU 吞吐，重负载区间更接近硬件分时推进；双 stage 的主要价值是让 Softmax 与 UMMA、correction 和搬运交错，而不是把 Softmax 本身的吞吐翻倍。源码还保留了一个可选的 stage-to-stage sequence barrier；启用后，两组 warps 分别编译成 stage 0 和 stage 1 的专用代码，并在 exp/P 区域显式交替进入。该选项当前关闭，因此不属于默认同步链。QK 与 PV 也共用同一 Tensor Core，只能按上面的顺序穿插，真正的并行来自其他 warp 和异步搬运引擎。
+
+最后一轮 PV 后没有下一次 QK 可以间接证明 O 已完成，所以 Tensor Core 会单独发布 final-O-ready。Correction 等到该事件，使用最终 row sum 归一化 O、做类型转换并写入对应的 SMEM output slot；Epilogue 等该槽 ready 后发出 GMEM store，并在异步引擎不再读取源 SMEM 时归还槽。这样输出 store 能跨到下一 work tile 的 inner loop，同时又不会让下一次 correction 提前覆盖源数据。
+
+这里的 ready 信号都表示数据已经可安全消费，而不只是某个 warp 已经发出指令。异步 copy 和 UMMA 的完成要挂到相应 barrier 上；TMEM/SMEM 写入也要先建立完成或可见性，再发布 handoff。退出时各 producer 还要等最后一圈槽被归还，所有 TMEM 使用者结束后才能释放 TMEM。因而整条正确性链始终是“完成并可见 → 通知 → 消费 → 归还”，不依赖一个覆盖全 CTA 的大同步点。
+
+***
+
+2-CTA 模式下一次 QK UMMA 的有效吞吐是单 CTA 的两倍，但 K/V 的 SMEM 占用为什么反而减半？这如何影响 K/V 流水级数 kv_stage？
+
+> 2-CTA 的 MMA tiler 是 (256,128,·),两个 CTA 各出 128 行 Q;而 B 操作数（K/V tile）在 cluster 内切成两半、每 CTA 存一半（源码 smem_size_kv_per_stage // cta_group_size）。于是每 CTA 的 KV SMEM 减半,同样的 224KB 预算能开更多 kv_stage,流水更深——这是 2-CTA 除了 MMA 效率外的第二重收益。
+
+host 侧启用 2-CTA 要求「非 causal」。从负载对称性角度解释这条限制。
+
+> 2-CTA 把 M 方向 256 行绑成一个 MMA：上半 128 行给 CTA0，下半给 CTA1，两者必须迭代同一组 KV block。causal 下上半行的合法 KV 少于下半行，同组迭代意味着上半 CTA 在大量 block 上空转 mask，负载天然不对称；非 causal 时两半负载完全相同。所以 causal 使用 1-CTA 配合 LPT（Longest Processing Time first，最长处理时间优先）调度处理倾斜更划算。

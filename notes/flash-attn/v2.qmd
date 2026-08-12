@@ -1,0 +1,243 @@
+---
+title: "FlashAttention v2"
+---
+
+## FlashAttention v1 的性能瓶颈
+
+FlashAttention v1 主要瓶颈包括：
+
+* Non-Matmul FLOPs 较多：每处理一个 KV Tile，都要对输出执行缩放和归一化。指数、除法和逐元素运算不能像矩阵乘一样充分利用 Tensor Core；
+* Thread Block 数量不足：v1 主要沿 Batch 和 Head 维度并行。当 Batch 较小、Head 数较少时，即使序列很长，也可能没有足够的 Thread Block 占满所有 SM；
+* Warp 间通信较多：v1 将 K 和 V 分给不同 Warp，同一个输出 Tile 的 partial sum 需要通过 Shared Memory 汇总。
+
+因此，v2 不再只关注“如何减少 HBM 访问”，还需要让更多 SM 同时工作、让 Warp 之间少交换数据，并将更多时间留给矩阵乘。
+
+FlashAttention v2 仍然是精确 Attention，也没有改变 $O(N^2d)$ 的主要计算复杂度。
+
+***
+
+## 减少 Non-Matmul FLOPs
+
+在 v1 中，$O_i\in\mathbb{R}^{B_r\times d}$ 始终保存已经归一化的输出。加入一个新的 KV Tile 后，需要先将 $O_i$ 乘回旧分母，还原成未归一化结果；完成尺度转换和累加后，又要除以新分母得到新的 $O_i$。
+
+v2 发现，中间结果没有必要在每轮都归一化。对于一个 Query Tile 和一个 KV Tile：
+
+$$Q_i\in\mathbb{R}^{B_r\times d},\qquad K_j,V_j\in\mathbb{R}^{B_c\times d}$$
+
+局部 Score Tile 为：
+
+$$S_{ij}=\frac{Q_iK_j^\top}{\sqrt d}\in\mathbb{R}^{B_r\times B_c}$$
+
+$S_{ij}$ 的每一行对应一个 Query，$B_c$ 列对应当前 KV Tile 中的 Key。Online Softmax 沿 $B_c$ 维处理这个 Tile。
+
+处理当前 $K_j,V_j$ 之前，每个 Query Tile $Q_i$ 使用三个状态概括已经处理过的所有 KV Tile：
+
+* $m_i\in\mathbb{R}^{B_r}$：每个 Query Row 目前见过的最大 Score，用作稳定计算指数的基准；
+* $l_i\in\mathbb{R}^{B_r}$：每个 Query Row 在该基准下累积的指数和，也就是当前归一化分母；
+* $A_i\in\mathbb{R}^{B_r\times d}$：每个 Query Row 对已经处理过的 Value 得到的未归一化输出 Accumulator。
+
+三个状态初始化为：
+
+$$m_i=-\infty,\qquad l_i=0,\qquad A_i=0$$
+
+现在处理新的 $S_{ij}$。先计算当前 Tile 自己的逐行最大值：
+
+$$\widetilde m_{ij}=\operatorname{rowmax}(S_{ij})\in\mathbb{R}^{B_r}$$
+
+旧状态使用 $m_i$ 作为指数基准，当前 Tile 使用 $\widetilde m_{ij}$ 作为指数基准。为了让两部分能够相加，先逐行取两者的最大值作为新的共同基准：
+
+$$m_i'=\max(m_i,\widetilde m_{ij})\in\mathbb{R}^{B_r}$$
+
+旧状态到新基准的缩放系数与 v1 相同：
+
+$$\alpha_{ij}=\exp(m_i-m_i')\in\mathbb{R}^{B_r}$$
+
+其中每个元素对应一个 Query Row 的缩放系数。
+
+对于旧状态中的任意 Score，将指数基准从 $m_{i,r}$ 改成 $m_{i,r}'$，等价于将原来的指数值乘以 $\alpha_{ij,r}$：
+
+$$e^{s_{i,r,k}-m_{i,r}'}
+=
+e^{m_{i,r}-m_{i,r}'}e^{s_{i,r,k}-m_{i,r}}
+=
+\alpha_{ij,r}e^{s_{i,r,k}-m_{i,r}}$$
+
+v1 会先以 $\widetilde m_{ij}$ 为基准计算当前 Tile 的指数值，再用 $\beta_{ij}$ 将其转换到新尺度。v2 直接以共同基准 $m_i'$ 计算当前 Tile 的未归一化权重：
+
+$$\widetilde P_{ij}'
+=
+\exp\left(S_{ij}-m_i'[:,\mathrm{None}]\right)
+\in\mathbb{R}^{B_r\times B_c}$$
+
+因此旧状态和当前 Tile 已经处于同一个指数尺度，不再需要单独计算 $\beta_{ij}$。新的累计分母为：
+
+$$l_i'
+=
+\alpha_{ij}\odot l_i+
+\operatorname{rowsum}(\widetilde P_{ij}')
+\in\mathbb{R}^{B_r}$$
+
+当前 Tile 在共同尺度下的未归一化 Value 加权和为：
+
+$$\widetilde P_{ij}'V_j\in\mathbb{R}^{B_r\times d}$$
+
+v2 维护的 $A_i$ 是未归一化 Accumulator，因此只需将旧 $A_i$ 乘以 $\alpha_{ij}$ 缩放，再加上当前 Tile 的加权和。对每个 Query Row $r$：
+
+$$A_{i,r,:}'
+=
+\alpha_{ij,r}A_{i,r,:}+
+(\widetilde P_{ij}'V_j)_{r,:}$$
+
+与 v1 不同，这里不会立即除以 $l_{i,r}'$。完成本轮后，用 $m_i'$、$l_i'$ 和 $A_i'$ 替换旧状态，继续处理下一个 KV Tile。
+
+只有所有 KV Tile 都处理完成后，才执行一次逐行归一化：
+
+$$O_{i,r,:}=\frac{A_{i,r,:}}{l_{i,r}},\qquad 1\le r\le B_r$$
+
+分子 $A_i$ 和分母 $l_i$ 在每轮都使用相同的最大值和缩放系数，因此推迟除法不会改变 Attention 结果，却省去了每个 KV Tile 上对整个输出 Tile 的反复归一化。
+
+***
+
+## 以 Query Tile 为外层循环
+
+FlashAttention v1 的前向以 KV Tile 为外层循环。一个 Thread Block 负责一个 Batch 和 Head，需要在内部依次更新多个 Query Tile：
+
+```text
+for each K_j, V_j Tile
+    for each Q_i Tile
+        更新 O_i, m_i, l_i
+```
+
+这样做的主要动机是：一个 $K_j,V_j$ Tile 读入 SRAM 后可以被所有 Q tile 重用。但是代价是：同一个 $Q_i$ 的计算被拆散到许多外层 KV 迭代，每轮需要从 HBM 重新读取和写回 $O_i$、$m_i$ 和 $l_i$。
+
+***
+
+**然而，更自然的方式是以 Q Tile 为外层循环**，在内层循环中遍历完整的 Key/Value 序列。
+
+v2 交换两层循环，将一个 Query Tile 作为独立工作单元：
+
+```text
+parallel for each Q_i Tile
+    加载 Q_i
+    初始化 A_i, m_i, l_i
+
+    for each K_j, V_j Tile
+        计算 S_ij
+        更新 A_i, m_i, l_i
+
+    O_i = A_i / l_i
+    写回 O_i
+```
+
+每个 Thread Block 固定负责一个 $Q_i$，并遍历完整的 Key/Value 序列。$Q_i$、$A_i$、$m_i$ 和 $l_i$ 可以在整个内层循环中保持 SRAM 驻留。
+
+## Query Tile 并行
+
+不同 Query Tile 对应 Attention 矩阵的不同行，也写入不同的输出 Tile。**不同 Query 之间没有数据依赖，可以独立并行计算，不需要相互通信或归约**。
+
+
+设 Batch Size 为 $B$，Attention Head 数为 $N_h$，Query Tile 数为：
+
+$$T_r=\left\lceil\frac{N}{B_r}\right\rceil$$
+
+v1 可并行调度的 Thread Block 数量主要为：
+
+$$N_{\text{block}}^{\text{v1}}\approx BN_h$$
+
+v2 增加 Query 序列维度后变为：
+
+$$N_{\text{block}}^{\text{v2}}\approx BN_hT_r$$
+
+长序列通常伴随较小的 Batch。此时 $T_r$ 提供了额外并行度，使更多 SM 能够同时处理不同的 Query Tile，而不是让一个 Thread Block 串行处理整个 Attention Head。
+
+***
+
+## Sliced-Q Warp Partition
+
+一个 Thread Block 内通常包含多个 Warp。除了决定不同 Thread Block 负责哪个 Tile，还需要决定同一个 Tile 如何分给这些 Warp。
+
+v1 使用 Sliced-K。假设一个 Thread Block 包含 $W$ 个 Warp，并且 $B_r$、$B_c$ 都能被 $W$ 整除。它将当前 $K_j,V_j$ 沿 $B_c$ 维切分：
+
+$$K_j=
+\begin{bmatrix}
+K_j^{(0)} \\
+K_j^{(1)} \\
+\vdots \\
+K_j^{(W-1)}
+\end{bmatrix},\qquad
+V_j=
+\begin{bmatrix}
+V_j^{(0)} \\
+V_j^{(1)} \\
+\vdots \\
+V_j^{(W-1)}
+\end{bmatrix}$$
+
+其中：
+
+$$K_j^{(w)},V_j^{(w)}\in\mathbb{R}^{(B_c/W)\times d}$$
+
+未归一化权重 $\widetilde P_{ij}$ 沿相同的列维度切分，每个 Warp 持有：
+
+$$\widetilde P_{ij}^{(w)}\in\mathbb{R}^{B_r\times(B_c/W)}$$
+
+每个 Warp 处理一部分 Key/Value，并为同一组 Query Row 生成一个完整形状的输出 partial sum：
+
+$$C_{ij}^{(w)}=\widetilde P_{ij}^{(w)}V_j^{(w)}\in\mathbb{R}^{B_r\times d}$$
+
+所有 Warp 计算的都是同一个输出 Tile $O_i$ 的部分贡献，因此最终必须相加：
+
+$$C_{ij}=\sum_{w=0}^{W-1}C_{ij}^{(w)}$$
+
+```text
+Warp 0 ──> [Br, d] partial sum ──┐
+Warp 1 ──> [Br, d] partial sum ──┼──> 跨 Warp 归约
+...                              │
+Warp W-1 ──> [Br, d] partial sum ─┘
+```
+
+这些 partial sum 需要写入 Shared Memory，等待 Warp 同步，再由 Warp 读取并归约。矩阵乘本身很快时，**Warp 间同步会成为明显开销**。
+
+***
+
+**由于 Query 之间没有数据依赖，可以独立并行计算**，v2 改为 Sliced-Q。它将 $Q_i$ 沿 $B_r$ 维切分给不同 Warp，而所有 Warp 都可以访问同一个 $K_j,V_j$。这样，每个 Warp 只负责输出 Tile 中互不重叠的行，不需要跨 Warp 汇总。
+
+$$Q_i=
+\begin{bmatrix}
+Q_i^{(0)} \\
+Q_i^{(1)} \\
+\vdots \\
+Q_i^{(W-1)}
+\end{bmatrix},\qquad
+Q_i^{(w)}\in\mathbb{R}^{(B_r/W)\times d}$$
+
+第 $w$ 个 Warp 只计算自己负责的 Query Row：
+
+$$S_{ij}^{(w)}=\frac{Q_i^{(w)}K_j^\top}{\sqrt d}\in\mathbb{R}^{(B_r/W)\times B_c}$$
+
+对应的未归一化权重只包含这些 Query Row：
+
+$$\left(\widetilde P_{ij}'\right)^{(w)}\in\mathbb{R}^{(B_r/W)\times B_c}$$
+
+$$C_{ij}^{(w)}=\left(\widetilde P_{ij}'\right)^{(w)}V_j\in\mathbb{R}^{(B_r/W)\times d}$$
+
+不同 Warp 得到的是输出 Tile 中互不重叠的行：
+
+```text
+Warp 0   ──> O_i 的第 0 组行
+Warp 1   ──> O_i 的第 1 组行
+...
+Warp W-1 ──> O_i 的第 W-1 组行
+```
+
+这些结果只需要沿行方向拼在一起，不需要为了合并输出而执行跨 Warp 归约。Sliced-Q 因而减少了 Shared Memory 中间结果、Warp 同步和重复读写。
+
+***
+
+## 收益
+
+FlashAttention v2 主要优化 GPU 上的工作分配：
+
+* 减少冗余计算，将输出除法推迟到所有 KV Tile 处理完成之后，减少 Non-Matmul FLOPs；
+* 从 KV-outer 改为 Q-outer，将不同 Query Tile 分配给独立 Thread Block，沿序列维度增加并行度；
+* 使用 Sliced-Q，让不同 Warp 负责不同输出行，避免对输出 partial sum 执行跨 Warp 归约。

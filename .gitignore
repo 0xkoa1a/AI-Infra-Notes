@@ -1,3 +1,11 @@
 MatmulTutorial
 .DS_Store
 flash-attention
+
+# Quarto 站点与单页派生产物
+_site/
+.quarto/
+notes/.quarto/
+*_files/
+*.html
+*.quarto_ipynb

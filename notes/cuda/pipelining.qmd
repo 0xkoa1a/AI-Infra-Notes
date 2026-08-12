@@ -1,0 +1,84 @@
+---
+title: "CUDA 中的流水线技术"
+---
+
+我们希望充分利用 GPU 的计算单元，让它们不空闲。
+
+以下以矩阵乘法 $\mathbf{C} = \mathbf{A} \times \mathbf{B}$ 为例。
+
+假设加载单元每 stage 搬运 $B\times K$ 的 A/B tile 到 Shared Memory，计算单元从 Shared Memory 读取这两个 tile，计算出一个 $B\times B$ 的 partial sum。共有 $S$ 个 stage。
+
+## load-MMA 流水线
+
+设：
+- 每个 stage 的计算时间为 $C$；
+- 搬运一个 stage 数据的带宽服务时间为 $\tau$；
+- 从发出搬运到数据可用的延迟为 $L$；
+- 流水线总级数为 $S$。
+
+> $\tau$ 描述带宽， $L$ 描述延迟。
+> 设一个 tile 的数据量为 $D$，带宽为 $BW$，则 
+> $$\tau = D / BW$$
+> 而
+> $$L = L_{fixed} + \tau + L_{queue}$$
+
+要让流水线满负荷运行（加载被计算隐藏），需要满足：
+- 带宽条件：计算单元消费数据的速度小于等于内存系统持续提供数据的速度：$C \ge \tau$
+    - 否则就是带宽瓶颈
+- 延迟条件：数据需要提前发起搬运，以便在计算需要时数据已经到位：$(S - 1) C \ge L$
+    - 否则就是延迟瓶颈
+
+算例：
+- 内存加载延迟 $L=600$ cycles；
+- 内存每隔 $\tau=100$ cycles 可以完成一个 tile；
+- 每个 stage 计算 $C=150$ cycles。
+- 两级流水线
+
+此时虽然有内存带宽大于计算速度 $C > \tau$，但是由于两级流水线只能提前一个 stage 发射搬运，计算单元需要等待 $L - (S-1)C = 600 - 150 = 450$ cycles 才能拿到数据，不能满负荷运行。
+
+为了覆盖内存延迟，就需要增加流水线级数 $S$，使得 $(S-1)C \ge L$。在本例中，$S=5$ 时 $(5-1)150 = 600 \ge 600$，计算单元可以满负荷运行。
+
+## Tile size 与流水线级数的 trade-off
+
+每一 stage 的数据搬运量是 $2BK$，计算量是 $2B^2K$。算术强度（单位数据上执行的计算量）是 $\frac{2B^2K}{2BK} = B$。
+
+总的 Shared Memory 占用量是 $2SBK$。
+
+在给定 Shared Memory 容量的条件下，提高流水线级数有两种方式：
+- 降低 tile size $B$
+- 降低每个 stage 的 K 维长度 $K$
+
+一般优先选择降低 $K$。这是因为降低 $B$ 会
+- 在 tile 层面：降低算术强度，使得单个 stage 内的计算时间相对于加载时间更短，更难掩盖加载。
+- 在整个矩阵层面：降低了数据复用，增加了数据的重复搬运，从而增加了总的加载时间。
+
+通过降低 $K$ 的方式加深流水线级数 $S$，不会影响 $C \ge \tau$ 的条件（因为 $C$ 和 $\tau$ 大致同比例变化），只影响 $(S-1)C \ge L$ 的条件。但是因为增加 $S$ 的同时会减少 $C$，而 $L$ 保持不变，所以增加 $S$ 的边际收益是递减的。
+
+***
+
+一般 B 已经是最大的了，只在 K 和 S 之间 trade-off.
+
+一次加载 k=128，然后发两个 k=64 mma，也可以重叠 L。
+
+B 越大, tensor core 计算的越快（向量化）
+
+
+## MMA-epilogue 流水线
+
+MMA 将一整块输出 tile 累加完成后，需要将其写回 global memory。为了隐藏这个开销，也需要流水线。
+
+设：
+- MMA 计算得到一整个输出 tile 的时间为 $T_M$；
+- 搬运一个输出 tile 到 global memory 的时间为 $T_W$；
+- 从输出 tile 计算完成到对应 buffer 可以被 MMA 复用的延迟为 $T_R$。
+- 流水线总级数为 $S$。
+
+> 对于只单纯把数据从 Shared Memory store 到 Global Memory 的 epilogue 来说，$T_W$ 和 $T_R$ 基本是一回事。但是对于要先执行其他操作（如激活函数）的 epilogue 来说：
+> $$T_R = T_A + T_W$$
+> 其中 $T_A$ 是其他操作的执行时间。
+
+为了让 epilogue 开销被充分隐藏，需要：
+- 带宽条件：$T_M \ge T_W$
+- 延迟条件：$(S - 1) T_M \ge T_R$
+
+MMA 不需要等到写回对 global memory 可见，只需要等到 buffer 可以被安全复用。在只有简单 store 的 epilogue 中，double buffering 就足够了；在有其他计算的情况下，才需要更深的流水线掩盖延迟。
