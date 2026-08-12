@@ -3,8 +3,9 @@ project:
   output-dir: ../_site
 
 website:
-  title: "AI 推理 Infra 学习笔记"
+  title: "AI Infra 知识库"
   description: "AI 推理与训练基础设施知识库"
+  reader-mode: true
   search:
     location: sidebar
     type: textbox
@@ -27,7 +28,8 @@ website:
 format:
   html:
     theme:
-      light: cosmo
+      light: flatly
+      dark: darkly
     css: styles.css
     toc: true
     toc-depth: 3
