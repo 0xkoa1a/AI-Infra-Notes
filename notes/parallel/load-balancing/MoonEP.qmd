@@ -296,27 +296,19 @@ MoonEP 的分配表恰好就是这个信息：前文那个「全局序号落在�
 ![与DeepEP对比](images/comm_vs_deepep.png)
 
 为什么 combine 快很多？
+
 > MoonEP 的 combine 柱子是纯蓝的，没有绿也没有紫。这是主因：planning 和 prefetch 全部记在了 dispatch 头上。
+> 
 > planning：combine 复用 dispatch 存下来的 plan，规划一次不用再算
+> 
 > prefetch：权重已经在槽位里了，combine 不需要再搬
-> 所以 combine 这张图展示的是算法本身的净收益，没有被额外 kernel 稀释：
 > 
 > 零拷贝在 combine 上收益最大。DeepEP 的 combine 要做 unpermute + 按路由权重归约 + 从通信 buffer 拷到用户 buffer，而 README 明确说这个收尾拷贝「dominates the epilogue」。MoonEP 把 unpermute 归约融进了通信路径
-> 免疫 skew：DeepEP 从 2126 涨到 2468（+16%），MoonEP 在 1932–1975 之间平着走
-> 顺便一个反直觉的对照：单看 comm，dispatch 的相对优势其实更大（1820 vs 2296，领先 21%；combine 是 1975 vs 2126，领先 7%）。所以 combine 赢得多不是因为它的通信优化更好，纯粹是因为它不背那两个 kernel。
 
-为什么 dispatch 只在重度 skew 才反超
-> 因为 prefetch 是 DeepEP 完全不付的一笔净增成本，而它有 700µs 量级，比 MoonEP 在 comm 上省下的 470µs 还多。
-> 1820+50+728=2598>2296
-> MoonEP 在通信本身上是稳赢的，但赢的那部分被 prefetch 吃掉还倒欠。只有当 DeepEP 因为 skew 自己涨到 2604，MoonEP 才反超。
-> 两个必须注意的前提，它们让这张图对 MoonEP 格外不利：
-
-> 这是训练的最坏配置。 基准注释写了 B == epn，所以 prefetch_weight 发的是真实的 NVLink 远程读，槽位开满。推理下 B=3–4，prefetch 会小一个量级
-> prefetch 在这里是串行计入的。 基准把 dispatch() 和 _prefetch() 背靠背放在同一条流上计时，所以柱子是相加的。而实际集成里这两者是可以重叠的（前文那一节的结论），重叠之后不会是简单相加
-> 还有一点：dispatch fwd 和 bwd 各付一次 prefetch（反向的专家 GEMM 需要同一批权重），所以这笔成本在训练里出现两次。
 
 为什么 MaxVio=20 反而更快
-> 这是最有意思的一问，答案是：你说对了一半——comm 确实与 skew 无关，蓝色柱子在 1820–1860 之间几乎是平的。缩短的是紫色的 prefetch。
+
+> comm 确实与 skew 无关，蓝色柱子在 1820–1860 之间几乎是平的。缩短的是紫色的 prefetch。
 > 从 ~730 掉到 ~523，降了近三成。原因在于一个容易被忽略的事实：
 > prefetch 的成本只由「借了几种专家」决定，与「搬了多少 token」无关。
 > 
