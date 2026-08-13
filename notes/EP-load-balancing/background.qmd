@@ -1,11 +1,11 @@
 ---
-title: "EP 负载均衡：问题、假设与设计空间"
-order: 2
+title: "EP 负载均衡：问题、动机、典型范式"
+order: 0
 ---
 
-## MoE、EP 与系统侧负载均衡
+## 问题与动机
 
-MoE（Mixture of Experts）把 Transformer 中的 FFN 替换为 $E$ 个并列的 Expert，每个 Expert 是一个独立 MLP。Router 为每个 token 打分，只选择 Top-$k$ 个逻辑 Expert 参与计算：
+MoE 把 Transformer 的 FFN 换成 $E$ 个并列的 Expert，每个 Expert 是一个独立 MLP。Router 给每个 token 打分，只挑出 Top-$k$ 个逻辑 Expert 参与计算：
 
 ```text
 token → Router → 打分 → 选出 Top-k 个逻辑 Expert
@@ -15,9 +15,7 @@ token → Router → 打分 → 选出 Top-k 个逻辑 Expert
                     其余 E - k 个不激活
 ```
 
-MoE 的立足点是**参数量与激活量解耦**：总参数量随 Expert 数量增长，但一个 token 实际激活的计算只随 $k$ 增长。
-
-当所有 Expert 权重无法放在一张 GPU 上时，需要把它们分布到多个 Rank，这就是 Expert Parallelism（EP）。token 最初属于产生它的 Rank，而它选择的 Expert 可能在其他 Rank 上，因此一层 MoE 通常包含两次 token 交换：
+当全部 Expert 权重塞不进一张 GPU 时，就得把它们摊到多个 Rank 上，这就是 Expert Parallelism。一个 token 属于产生它的 Rank，但它挑中的 Expert 可能住在别的 Rank，所以一层 MoE 通常要交换两次 token：
 
 ```text
 Token-Owned 布局（每个 Rank 持有自己的 token）
@@ -41,113 +39,93 @@ Combine：把 Expert 输出送回 token 原来的 Rank
 Token-Owned 布局，按 Router 权重加权合并
 ```
 
-token 在逻辑 expert 之间的分布可能会很不均匀，某些专家可能收到大量 token（热点专家），导致
+token 在逻辑 Expert 之间的分布可能很不均匀：少数 Expert 收下大量 token，成为热点。这带来两个直接后果：
 
-- **长尾**：热点专家通信和计算时间过长，其他 Rank 等待
-- **激活显存压力**（训练）：收到的 token 越多，激活占用的显存也越多。
+- **长尾**：热点 Expert 的通信与计算拖得特别久，其余 Rank 只能干等。
+- **激活显存压力**（训练）：一个 Rank 收到的 token 越多，要存的激活越大。
 
-为了解决这个问题，一般有两种负载均衡的方法：
+解决办法分两类，分别作用在链路的两个不同环节：
 
-- 训练时使用 auxiliary loss、router bias 等。它们让 Router 一开始就生成比较均匀的分布。
-    - 这属于模型/算法层面的工作
-- 在 Router 和 Token Dispatch 之间增加一个负载均衡器，提供一层虚拟化（虚拟专家 -> 物理专家），让物理专家之间的 token 负载尽量均衡。
-    - 这属于系统/infra 层面的工作
-    - 我们主要关注这一类工作
+- 算法侧负载均衡：训练时用 auxiliary loss、router bias 等手段，让 Router 一开始就给出比较均匀的分布。
+- 系统侧负载均衡：在 Router 与 token dispatch 之间插一个负载均衡器，把逻辑 Expert 虚拟化成物理 Expert，让物理实例之间的 token 负载尽量均匀。
+    - 这是我们关心的对象。
 
-两种方法会组合使用，因为 auxiliary loss 等算法手段往往主要确保不会出现极端负载不均衡（有些 expert 完全死亡），还需要系统侧的负载均衡器来缓解
+两类手段通常组合使用：算法侧主要防止极端失衡（比如某些 Expert 彻底死亡），残余的不均衡仍要靠系统侧去消化。
 
 ## 负载分布的特征
 
-EP 负载分布由 Router 输出决定。
-
-### 时间特征
-
-负载分布可能在多步内呈现类似的分布（temporal locality），可以用最近一段时间内的历史信息预测未来的负载分布，并且一次均衡可以持续服务多步。
-- 专家分工：某些专家在代码任务时活跃，某些专家在数学任务时活跃
-
-负载分布也可能快速漂移，每一步的分布都与上一步差异较大，此时则需要逐步做负载均衡。
-
-**目前这些工作在这一点上没有形成共识。这导致了它们在范式上的分歧**。
-
-### Layer 特征
-
-不同 layer 的负载分布情况往往不同。
-
-这些工作在这一点上形成共识，大家都是逐层分别做负载均衡的。
+要设计负载均衡器，先看它面对的是什么样的负载。EP 的负载分布完全由 Router 输出决定，下面是两个真实的分布例子：
 
 ![Prefill 场景中的专家负载分布示例](images/prefill-load-dist.png)
 
 ![训练过程中的专家负载分布示例](images/train-load-dist.png)
 
-## 做法：重排与复制
+负载在两个维度上表现出明显不同的规律，这两条规律最终决定了各家工作的范式分歧。
 
-重排：通过调整物理专家在不同 rank 上的 placement，缓解某些 Rank 具有多个热点专家的情况。
-- 需要搬运较多专家权重，搬运开销很大
+### 时间维度特征
 
-复制：通过在多个 Rank 上创建逻辑 Expert 的副本，削减热点专家的负载。
-- 需要额外显存来保存副本权重
-- bwd 需要考虑梯度归约如何同步
+分布可能在一段时间里保持相似（temporal locality）：最近几步的历史可以预测未来，一次均衡能连续服务多步。
 
-## 分歧：对于负载分布的 assumption
+- 专家有分工：有些专家处理代码任务时活跃，有些在处理数学任务时活跃。
 
-现有工作对负载均衡的分布特点并没有形成统一假设。有的工作认为历史信息具有较高指导意义，有的工作则强调历史信息过时迅速，甚至可能起负作用。
+分布也可能快速漂移，每一步都和上一步差很远，这时就只能逐 step 均衡。
+
+**到目前为止，各家在这一问题上没有共识，这正是它们范式分歧的来源。**
+
+### Layer 维度特征
+
+不同 layer 的负载分布通常不一样。
+
+这一点上各家形成了共识：均衡都逐 layer 独立进行。
+
+## 现有工作的典型范式
+
+在介绍两种范式之前，先厘清系统侧负载均衡器到底做哪两件事。它们是理解所有后续工作的坐标轴。
+
+### 布局与分流：系统侧的两个基本动作
+
+**布局（placement）**回答一个问题：每个逻辑 Expert 有哪些物理实例，各放在哪个 Rank。它包含两种动作：
+
+- **重排（replacement）**：改变主实例的 Rank 归属。代价很大——要搬权重甚至 optimizer state，还会打乱已有的局部性，因此只能低频执行。
+- **复制（replication）**：给同一逻辑 Expert 增加多份物理实例。代价是额外显存；训练时副本产生的梯度必须归约回主专家。
+
+**分流（reroute）**回答另一个问题：布局不动的前提下，当前这批 token 各自由哪个物理实例执行——主实例还是某个副本。它不改变 Router 选出的逻辑 Expert，也不搬运任何权重，代价小，可以每步都做。
+
+一句话总结：**布局决定“容量在哪里”，分流决定“流量往哪走”。**
 
 ### 历史布局 + 实时分流
 
-这类方法接受“历史统计不能精确预测当前 token”，但仍认为它可以回答一个更粗的问题：**哪些专家容量值得提前准备，哪些 Rank 之间应当允许互相分担。** 当前 Router 结果再完成最后一公里的 token 分流。
+这类方法承认历史统计猜不准当前的 token，但仍认为它能回答一个更粗的问题：**哪些容量值得提前准备，哪些 Rank 之间允许互相分担。**最后一公里的精确分流交给当前 Router 结果。
 
-- **LPLB**
-  - 历史负载用于 EPLB 重排和选择需要建立成对副本的热专家
-  - `r2o` 固定副本图限制可行域
-  - 当前 batch 使用精确计数，在 GPU 上求 LP 分流比例
-- **FineMoE**
-  - 初始使用对称 placement，或根据历史预测周期性 adaptive replacement
-  - 当前 microbatch 使用精确负载，在已有 EDP 副本间求 token 配额
-  - 历史信号处理长期偏斜，实时 LP 处理瞬时波动
-- **LAER-MoE**
-  - GPU token dispatcher 使用当前已经生效的布局，立即决定当前 token 去哪个副本
-  - CPU layout tuner 根据已经观察到的负载异步生成后续布局
-  - 它不一定依赖很长的统计窗口，但新布局仍然服务未来的参数恢复，而不会回头改变已经发出的当前 token
+- **LPLB**：用历史负载调 DeepSeek EPLB 做重排，并挑出值得建副本的热专家；`r2o` 固定的副本图划定可行域；当前 batch 用精确计数在 GPU 上解 LP，得出分流比例。
+- **FineMoE**：初始用对称 placement，或按历史预测周期性 adaptive replacement；当前 microbatch 用精确负载，在已有 EDP 副本之间求 token 配额。历史信号对付长期偏斜，实时 LP 吸收瞬时波动。
+- **LAER-MoE**：GPU token dispatcher 依据当前生效的布局，立刻决定每个 token 去哪个副本；CPU layout tuner 依据已观察到的负载异步生成下一版布局。它未必依赖很长的统计窗口，但新布局只服务未来的参数恢复，不会回头改写已经发出的 token。
 
-这类方法通常采用 2 phase 的设计，在两个时间尺度上做负载均衡：
-- 大尺度：每隔多步根据历史路由信息进行一次专家布局重排（replacement），搬运专家权重。
-    - 基本都是在 CPU 上做的。
-- 实时尺度：每一步，在已有布局基础上，根据当前 Router 输出的 token 分布，做在线分流（re-route），决定每个 token 的物理目的地。
+这类方法一般是 2 phase 设计，在两个时间尺度上分工：
 
-> DeepSeek EPLB 是一个 scope 比其他同类工作更局限的工作（也是一个更早期的工作）。其他工作既做专家布局的重排和复制，也给出 token -> 物理专家的具体分流方案，从而上承 router，下启 token dispatch。EPLB 是一个接受历史信息，输出专家布局方案的纯函数（一个运行在 CPU 上的 python 脚本）。它不考虑专家权重如何搬运，更不考虑 token 分流怎么做。
+- 大尺度：每隔多步，根据历史路由信息重排一次布局（replacement），搬运 Expert 权重，基本都在 CPU 上做。
+- 实时尺度：每步在已有布局上，根据当前 Router 输出的 token 分布做在线分流（re-route），给每个 token 定物理目的地。
+
+> DeepSeek EPLB 是这类工作里 scope 更局限、也更早期的一个。其余工作既做布局的重排与复制，也给出 token -> 物理专家的分流方案，上承 Router、下接 token dispatch；EPLB 则是一个接收历史信息、输出布局方案的纯函数（跑在 CPU 上的 Python 脚本），不管权重怎么搬，也不管 token 怎么分。
 >
-> 但是 EPLB 也 assume 历史统计信息可以预测未来负载，因此也归入此类。
+> 但 EPLB 同样假定历史统计能预测未来负载，所以仍归入这一类。
 
 ### 全实时布局 + 实时分流
 
-这类方法认为热点可能逐 batch、逐层快速漂移，历史 placement 即使只滞后一小段时间也可能空转甚至产生负收益：
+这类方法认为热点可能逐 batch、逐层快速漂移，历史 placement 哪怕只滞后一小段也可能空转，甚至帮倒忙：
 
-- **UltraEP** 使用当前 microbatch、当前层的精确负载，同时决定动态副本、quota 与 reroute
-- **MoonEP** 使用当前 microbatch 的完整路由，生成 token 分配表和需要借用的远端专家清单
-- 它们不把预测误差留给下一层补救，而是把求解与参数准备都放进当前层关键路径
+- **UltraEP** 用当前 microbatch、当前层的精确负载，同时定下动态副本、quota 与 reroute。
+- **MoonEP** 用当前 microbatch 的完整路由，生成 token 分配表和需要借用的远端 Expert 清单。
+- 两者不把预测误差留给下一层补救，而是把求解与参数准备直接放进当前层的关键路径。
 
-它们可以做到 exact 和实时。但是开销直接进入关键路径。
+它们能做到 exact 且实时，代价是**规划开销和 Expert 权重搬运开销直接进入关键路径**。
 
+![critical-path](images/critical-path.png)
 
 ## 训练、Prefill 与 Decode
 
-### 训练
+负载均衡值不值得做，还要看部署阶段。
 
-- 一个 step 中有较多 routed token，负载长尾通常会直接影响吞吐
-- microbatch 随机性会让当前负载偏离长期平均
-- 副本梯度必须正确归约，optimizer state 的归属或迁移也必须保持一致
-- placement 更新频率需要同时考虑均衡收益和状态迁移成本
+训练和 Prefill 里 routed token 多，均衡的收益明显；训练额外要求梯度归约正确——如果存在副本，副本梯度必须归约回主专家。
 
-### Prefill
-
-- 一次请求会产生一段 token，服务系统通常还会批处理多个请求
-- routed token 数较多时，热门 Expert 会形成明显的 Grouped GEMM 与接收流量热点
-- 请求语义域变化可能让热点在相邻 batch 之间平移
-
-### Decode
-
-- 单条序列每步只产生一个新 token，但服务系统通常同时推进多条序列，因此一个 decode step 仍可能包含一批 routed token
-- 并发序列少、batch 很小时，可供均衡的 token 数和收益都会下降
-- 此时权重访问、通信启动和在线求解的固定开销占比更高，是否值得均衡需要结合实际 batching 与执行后端测量
-
-训练、Prefill 与 Decode 的差别不只是 token 数，还包括计算强度、权重访问模式、状态同步要求和可接受的规划延迟。
+Decode 里可供均衡的 token 少得多，收益随之变小。
