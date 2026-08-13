@@ -1,5 +1,6 @@
 ---
 title: "FineMoE：在 EDP 副本之间调度 Token"
+order: 7
 ---
 
 FineMoE 的核心不是为每个 microbatch 迁移专家，而是利用数据并行已经产生的同专家副本，在一个更大的通信组内重新安排 token。这样，逐 microbatch 变化的是 token 去哪个现有副本，专家参数的位置只在更长的时间尺度上调整。

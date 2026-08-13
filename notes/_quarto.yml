@@ -20,7 +20,27 @@ website:
   sidebar:
     style: floating
     collapse-level: 2
-    contents: auto
+    contents:
+      - XStage.qmd
+      - XStage-modeling.qmd
+      - section: "EP Load Balancing"
+        contents:
+          - auto: "EP-load-balancing/**"
+      - section: "Misc"
+        contents:
+          - auto: "misc/**"
+      - section: "Cuda"
+        contents:
+          - auto: "cuda/**"
+      - section: "Model"
+        contents:
+          - auto: "model/**"
+      - section: "Parallel"
+        contents:
+          - auto: "parallel/**"
+      - section: "Flash Attn"
+        contents:
+          - auto: "flash-attn/**"
   page-footer:
     left: "本地生成 · 知识与源码自持"
     right: "由 Quarto 渲染"

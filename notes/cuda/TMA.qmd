@@ -1,5 +1,6 @@
 ---
 title: "TMA"
+order: 3
 ---
 
 TMA 位于 SM 内部，专门负责在 Shared Memory 和 Global Memory 之间高效、异步搬运大块数据，从而使 SM 线程不必亲自搬运数据。

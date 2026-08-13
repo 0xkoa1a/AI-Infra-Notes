@@ -1,5 +1,6 @@
 ---
 title: "DeepSeek EPLB"
+order: 1
 ---
 
 EPLB（Expert Parallelism Load Balancer）是 DeepSeek 开源的 EP 负载均衡算法。它的输入是每个 Expert 的负载估计，输出是一份 Expert 复制与放置方案，使各 GPU 的负载尽量均衡。参考实现见同目录 `eplb.py`。

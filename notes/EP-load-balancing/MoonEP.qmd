@@ -1,5 +1,6 @@
 ---
 title: "MoonEP：把不平衡度变成常量"
+order: 5
 ---
 
 MoonEP 是 Moonshot AI 的 EP 通信库，不是一个可以单独摘出来的均衡算法。它与 `EPLB.md`、`UltraEP.md` 处理同一个问题，但目标不同：后两者都在设法把 `background.md` 定义的不平衡度 $\rho$ 压向 1，MoonEP 让它恒等于 1。

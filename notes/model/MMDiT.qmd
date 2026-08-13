@@ -1,5 +1,6 @@
 ---
 title: "MMDiT：Multimodal Diffusion Transformer"
+order: 1
 ---
 
 ## DiT 简介

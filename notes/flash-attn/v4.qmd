@@ -1,5 +1,6 @@
 ---
 title: "FlashAttention v4：SM100 Forward Kernel 导读"
+order: 4
 ---
 
 [MagiAttention 导读](https://gin-sin.github.io/magiattention-blackwell-tutorials/index.html)

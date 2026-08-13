@@ -1,5 +1,6 @@
 ---
 title: "UMMA"
+order: 7
 ---
 
 UMMA 是 Blackwell SM100 Tensor Core 的异步矩阵乘加机制，对应 `tcgen05.mma` 指令族。

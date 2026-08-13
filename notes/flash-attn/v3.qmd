@@ -1,5 +1,6 @@
 ---
 title: "FlashAttention v3：SM90 Forward Kernel 导读"
+order: 3
 ---
 
 这篇笔记解释 FlashAttention v3 在 Hopper/SM90 上的 Forward kernel。实现入口不是

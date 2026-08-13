@@ -1,5 +1,6 @@
 ---
 title: "分布式通信基础"
+order: 4
 ---
 
 ## Rank、Process Group 与 Collective

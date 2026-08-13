@@ -1,5 +1,6 @@
 ---
 title: "Setup"
+order: 2
 ---
 
 三级流水线之间有两个 buffer：

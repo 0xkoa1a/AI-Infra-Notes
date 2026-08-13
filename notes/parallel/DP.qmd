@@ -1,5 +1,6 @@
 ---
 title: "Data Parallelism"
+order: 8
 ---
 
 Data Parallelism（DP）的核心，是让不同 Rank 使用相同模型处理不同训练样本，再将各 Rank 的局部梯度归约成同一个全局梯度。

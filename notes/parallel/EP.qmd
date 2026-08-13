@@ -1,5 +1,6 @@
 ---
 title: "Expert Parallelism"
+order: 1
 ---
 
 Expert Parallelism（EP）将不同 MoE Experts 放到不同 Rank。Token 由 Router 选择 Expert，再通过 Dispatch AllToAllV 移动到 Expert 所在 Rank；计算完成后，通过 Combine AllToAllV 返回原 Rank。

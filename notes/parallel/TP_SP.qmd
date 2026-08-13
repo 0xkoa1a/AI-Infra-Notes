@@ -1,5 +1,6 @@
 ---
 title: "Tensor Parallelism 与 Sequence Parallelism"
+order: 2
 ---
 
 ## Tensor Parallelism

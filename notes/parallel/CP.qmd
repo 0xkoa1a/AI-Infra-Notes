@@ -1,5 +1,6 @@
 ---
 title: "Context Parallelism"
+order: 7
 ---
 
 Context Parallelism（CP）的核心，是将完整序列分到多个 Rank，并让每个 Rank 始终只保存和计算自己的 Token。Linear、LayerNorm 和 MLP 都可以直接处理本地 Token；只有 Attention 需要让本地 Query 访问完整序列的 K 和 V。

@@ -1,5 +1,6 @@
 ---
 title: "数学建模"
+order: 1
 ---
 
 建模的目标是清晰、简单、intuitive 地表达 idea

@@ -1,5 +1,6 @@
 ---
 title: "IEEE-754 浮点数"
+order: 1
 ---
 
 $V=(-1)^s \times M \times 2^E$
