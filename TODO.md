@@ -4,9 +4,7 @@ magi attn 独占 SM
 RDMA 需要读 flag 需不需要 SM 去做？
 
 
-EPLB: deepseek. 
-论文：kimi moonEP, xhs ultra EP, finedMoE
+EPLB: 数学建模，根据负载分布的方差特征、随时间变化的特征，决定一些中间观察指标，最终指示选择何种负载均衡方案
 
-梳理一个演化路径图。周报隐身。
+对于启发式（近似）算法，可能具体收益是一个谜团，但是我可以分析他的收益上界。
 
-LPLB
