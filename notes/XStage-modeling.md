@@ -1,0 +1,165 @@
+---
+title: "Setup"
+order: 2
+---
+
+# Setup
+
+三级流水线之间有两个 buffer：
+- MMU（包括 L1 和 L2，L2 的结果会进入 RS 和 NVLink）
+    - epilogue buffer
+- Remote Store
+    - 硬件的发送 buffer
+- NVLink
+
+如何指导 MMU 发送 L2 的模式，使得硬件发送 buffer 尽量不会被打爆？
+
+
+如何对此场景做一个数学建模？
+
+## Intuition
+
+希望让 burst 在时间维度尽量散开，从而限制硬件发送 buffer 的瞬时压力。
+
+构造一个指标来衡量请求的分散程度，我们的任务是通过 interleave burst 和 gap 的方式最优化这个请求分散度指标。
+
+1. 这个指标可以是：在一个时间窗口内请求数量关于时间的方差。
+   - 方差越大说明请求越分散。
+1. 考虑到每个请求包含的数据量不一定相同，这个指标应该将请求的数据量纳入考量。
+2. 对于整个算子来说，我们认为总的计算量（所有的 burst + 所有的 gap）是固定的。
+
+## Modeling
+
+## 请求在时间分布上的方差
+
+设第 $i$ 个请求：
+
+* 发射时间为 $t_i$；
+* 数据量为 $b_i$。
+
+这一组请求的总数据量为：
+
+$$
+B=\sum_i b_i
+$$
+
+对于同一个算子或同一个 pipeline iteration，$B$ 通常是给定的。调度改变的不是总数据量，而是这些请求的发射时间 $t_i$。
+
+首先计算按数据量加权的平均发射时间：
+
+$$
+\bar t=\frac{\sum_i b_i t_i}{B}
+$$
+
+然后定义时间分布方差：
+
+$$
+V_t=\frac{\sum_i b_i(t_i-\bar t)^2}{B}
+$$
+
+它表达的是：
+
+> 同样的 Remote Store 数据量，在时间轴上被摊开到了多大范围。
+
+
+
+请求越集中：
+
+```text
+████████
+```
+
+$V_t$ 越小。
+
+请求之间 interleave 了其他工作：
+
+```text
+██ ··· ██ ··· ██ ··· ██
+```
+
+$V_t$ 越大。
+
+## 等效时间宽度
+
+Idea：burst 和 gap 都是时间宽度，单位是 cycles。我们可以根据方差构造出一个“等效时间分散宽度”的指标，其单位也是 cycles。它的 idea 是：如果一个请求序列的方差是 $Var$，那么它就等效于一个宽度为 $w$、请求均匀分布于其中的时间窗口。
+
+如果请求近似均匀地分布在长度为 $W$ 的时间区间中，那么它的时间方差约为：
+
+$$
+V_t\approx\frac{W^2}{12}
+$$
+
+因此，给定方差 $V_t$，我们可以定义等效时间宽度为：
+
+$$
+W_{\mathrm{var}}=\sqrt{12V_t}
+$$
+
+## 最优化的目标函数：burst 分散程度指标
+
+
+microbench 给出了两个关键硬件参数：
+
+* $R$：硬件队列通过 NVLink 排出数据的速率；
+* $C_{\mathrm{eff}}$：硬件队列能够吸收的有效 burst 容量。
+
+于是可以定义：
+
+$$
+\boxed{
+\mathrm{BDS}
+=
+\frac{C_{\mathrm{eff}}+R W_{\mathrm{var}}}{B}
+}
+$$
+
+称为 **Burst Dispersion Score，BDS**。
+
+其中：
+
+* $B$：这一批请求的总数据量；
+* $C_{\mathrm{eff}}$：硬件队列可以立即容纳的数据量；
+* $R W_{\mathrm{var}}$：请求被摊开的这段时间内，NVLink 可以排出的数据量。
+
+
+因此：
+
+* $\mathrm{BDS}>1$：请求大致可以被 queue capacity 和同步 drain 吸收；
+* $\mathrm{BDS}\approx1$：处于 capacity knee 附近；
+* $\mathrm{BDS}<1$：局部 burst 超过了 buffer 的吸收能力，容易产生 backpressure；
+* BDS 越大，请求在时间上越分散，队列压力越低。
+
+## 问题
+
+时间窗口的选择：
+- 一个 expert wave 周期？
+- 一个时间窗口内需要只包含一波 burst。
+    - 假如 t=0 有 100 个请求，t=100 又有 100 个请求，形成双峰分布，则方差很大但请求不分散
+- 方差可能不是一个很好的指标。瞬时速率？
+
+和 kernel 设计策略比较近（排列问题），但是和优化目标比较远（描述性 相关性，而不是决定性 因果性）
+
+1. 起点：burst-gap 排列问题
+1. epilogue 的反压时间
+1. 终点：tensor core 反压时间
+
+
+***
+
+## 建模
+
+megamoe部分的写作任务：结合之前的数学建模，说明在 buffer 一直是满着的前提下，重排 burst-gap 顺序，能带来收益。
+- kernel 优化方法：重排 burst-gap 顺序
+- 希望关键路径上只有 MMA，这需要 MMA 执行时间 大于等于 epilogue 执行时间，否则关键路径上暴露 T_epi - T_MMA 长度的 stall。
+- 设定：在 megamoe 的场景下总是有 T_epi > T_MMA（因为 megamoe 是一个 drain rate dominate 的场景）
+- 优化方法的收益机制：（要有因果性）
+
+buffer 满了不一定会传导到 tc 反压。但是只要尽力而为，让 buffer 尽量不满不会更差。
+
+
+推导: minimize T_{epi}
+GT：drain rate, T_epi > T_{MMA}
+当 buffer 总是满的时候，一个 burst-gap 周期是一个常数 = 通信量 / drain rate，gap 和 epilogue 的长度就是此消彼长的关系
+通过增加 setting，简化问题
+
+总之希望把问题简化成，只看一级流水线。

@@ -2,10 +2,9 @@ MatmulTutorial
 .DS_Store
 flash-attention
 
-# Quarto 站点与单页派生产物
+# VuePress 依赖、缓存与静态输出
+node_modules/
 _site/
-.quarto/
-notes/.quarto/
-*_files/
-*.html
-*.quarto_ipynb
+notes/.vuepress/.cache/
+notes/.vuepress/.temp/
+pnpm-debug.log*

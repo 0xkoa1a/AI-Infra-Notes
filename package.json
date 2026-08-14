@@ -1,0 +1,38 @@
+{
+  "name": "inference-learning",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs:dev": "vuepress dev notes --host 127.0.0.1",
+    "docs:build": "vuepress build notes",
+    "docs:clean-dev": "vuepress dev notes --host 127.0.0.1 --clean-cache --clean-temp"
+  },
+  "engines": {
+    "node": "^22.18.0"
+  },
+  "packageManager": "pnpm@10.15.1",
+  "pnpm": {
+    "overrides": {
+      "vue-router": "4.2.2"
+    },
+    "onlyBuiltDependencies": [
+      "@parcel/watcher",
+      "esbuild",
+      "vue-demi"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "20.2.5",
+    "@vuepress/client": "2.0.0-beta.62",
+    "@vuepress/plugin-container": "2.0.0-beta.62",
+    "@vuepress/plugin-search": "2.0.0-beta.62",
+    "@vuepress/theme-default": "2.0.0-beta.62",
+    "typescript": "5.0.4",
+    "vite": "4.3.9",
+    "vue": "3.3.4",
+    "vuepress": "2.0.0-beta.62",
+    "vuepress-plugin-copy-code2": "2.0.0-beta.217",
+    "vuepress-plugin-md-enhance": "2.0.0-beta.217"
+  }
+}
