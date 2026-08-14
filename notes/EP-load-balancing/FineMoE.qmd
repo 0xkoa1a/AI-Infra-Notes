@@ -18,6 +18,15 @@ FineEP 的分流空间来自 Expert Data Parallelism（EDP），不是临时创�
 - 同一个逻辑 Expert 在不同 EP group 中已经有多份等价参数，这些副本通过 EDP 同步
 - 每张 GPU 承载多个本地物理实例，布局才有在 GPU 之间打散的空间
 
+论文 Figure 3 的 `DP=4、EP=2` 正好说明这些组怎样重叠：
+
+- 一个 DP group 包含 GPU 0、1、2、3
+- 其中划分出两个 EP group：`{GPU 0, GPU 1}` 与 `{GPU 2, GPU 3}`
+- GPU 0 与 GPU 2 在各自 EP group 中具有相同的 EP rank，持有同一组逻辑 Expert 的等价实例；它们构成一组 EDP group
+- GPU 1 与 GPU 3 同理构成另一组 EDP group
+
+因此这里只用了 4 张 GPU，而不是把 DP degree 与 EP degree 相乘得到 8 张。FineEP 合并的是这两个已经存在于同一 DP group 内的 EP group，然后在它们的 EDP 副本之间扩大 token 分流范围。
+
 ## 动机
 
 FineMoE 的核心不是为每个 microbatch 迁移 Expert，而是利用数据并行已经产生的同 Expert 副本，在一个更大的通信组内重新安排 token。这样，逐 microbatch 变化的是 token 去哪个现有副本，Expert 参数的位置只在更长的时间尺度上调整。
@@ -120,7 +129,7 @@ FineMoE 对每个专家分别维护两组剩余量：
   - 每次取二者的较小值，把这一段 token 交给当前副本，然后扣减两边的剩余量
   - 重复直到所有源 token 与所有副本配额同时清零
 
-实现操作的是连续 token range，而不是逐 token 做一次调度决定。这样生成的结果仍然精确满足 LP 配额，但元数据量和控制开销更小。固定遍历顺序也让所有 GPU 在相同输入下能独立重建同一份确定性方案。
+实现操作的是连续 token range，而不是逐 token 做一次调度决定。如果输入的副本配额已经是整数，这个过程可以精确填满每个配额，同时减少元数据量和控制开销。固定遍历顺序也让所有 GPU 在相同输入下能独立重建同一份确定性方案；但论文没有说明连续 LP 解怎样先变成这样一组整数配额，这正是后文问题章节保留的缺口。
 
 这里要区分三个层次的优化目标：
 
@@ -183,6 +192,8 @@ cycle、torus 都可以看成这类对称结构的直观例子。论文给出的
 
 打乱布局后，不同 Expert 会使用不同的 EDP group。训练中的参数与梯度同步如果以不一致顺序进入这些通信组，可能互相等待并死锁。
 
+例如 Rank A 先进入 Expert 0 的 EDP collective、再进入 Expert 1，而 Rank B 因本地 Expert 顺序不同，先进入 Expert 1、再进入 Expert 0；两边就可能分别等待对方进入不同的 collective，形成循环等待。
+
 FineMoE 因此要求：**同一专家在所有 GPU 上必须使用相同的 local expert index**。DDP 按本地参数顺序同步参数，并按相反顺序同步梯度；统一 local index 后，同一专家的所有副本会以一致顺序进入它自己的 EDP 通信组。
 
 #### 自适应重排
@@ -191,7 +202,7 @@ FineMoE 把快速波动和长期偏斜交给两个不同时间尺度：
 
 - **每个 microbatch**：布局固定，LP 根据当前 Router 结果重新分配副本配额，处理瞬时波动
 - **每隔若干 iteration**：布局管理器在后台汇总历史负载，用 moving average 等时间序列方法预测后续分布，再用最大诱导子图 density 评价当前布局
-- **预测性能低于阈值时**：生成新的非对称布局，并重新初始化全局模型状态，把参数和 optimizer state 迁移到新位置
+- **预测性能低于阈值时**：生成新的非对称布局，暂停训练并按新布局重建各 Rank 的本地模型状态，把原有参数和 optimizer state 迁移到新位置。论文所说的 model re-initialization 指分布式状态按新 placement 重新建立，不是把模型参数重新随机初始化
 
 自适应重排会暂停训练，而且需要搬动远大于 token 元数据的模型状态，所以只能低频执行。它是针对极端或持续 skew 的粗粒度补充；FineMoE 的主要均衡手段仍是固定布局上的逐 microbatch 分流。
 

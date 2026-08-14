@@ -27,7 +27,7 @@ Group 的设计是为了限制跨节点通信量。因此 EPLB 要求 group 与�
 
 ## 动机
 
-EPLB（Expert Parallelism Load Balancer）是 DeepSeek 开源的 EP 负载均衡算法。它用历史 Expert 负载低频准备布局，避免长期热点集中在少数 GPU。参考实现见同目录 `eplb.py`。
+EPLB（Expert Parallelism Load Balancer）是 DeepSeek 开源的 EP 负载均衡算法。它用历史 Expert 负载低频准备布局，避免长期热点集中在少数 GPU。本文依据仓库中的 `parallel/load-balancing/eplb.py`。
 
 ## 方法
 
@@ -163,17 +163,14 @@ Step 2 优化的是 $w_e/c_e$ 而不是 $w_e$：它衡量的是**每个物理实
 
 #### 为什么两个阶段的选择不同
 
-有三条理由。
+有两条理由。
 
 - 理由一：瓶颈位置不同
   - Prefill：$T=B\times S$，token 量巨大 → 通信量大，bandwidth-bound
     - 跨节点流量是主要矛盾 → 优先保 group 局部性
   - Decode：$T=B$，消息小、数量多 → latency-bound
     - 单个 Rank 的长尾是主要矛盾 → 优先保负载均衡
-- 理由二：容错空间不同
-  - Prefill 的 Grouped GEMM 较大，少量不均衡可以被计算时间摊薄
-  - Decode 每步时间极短，任何长尾都直接放大到端到端延迟
-- 理由三：EP 度大时约束会冲突
+- 理由二：EP 度大时约束会冲突
   - EP 度大 ⇒ 每 GPU 的物理实例数极少（可能只有一两个）
   - 放置的自由度本来就很低
   - 「每 GPU 个数相等」这个硬约束叠加 group 局部性，可能根本没有可行的均衡解

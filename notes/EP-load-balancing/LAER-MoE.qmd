@@ -26,10 +26,13 @@ LAER-MoE 的突破口是：**不再让完整 Expert 拥有固定的主实例所�
 
 ### Executor 与 Planner 的职责
 
-整个系统由两部分组成：
+整个系统由三项职责组成，它们消费的信号和服务的时点不同：
 
-- **FSEP executor**：输入 Expert 布局，负责分片保存 Expert、按布局恢复完整物理实例，并在反向后把梯度归约回长期分片
-- **load-balancing planner**：输入已观察到的负载、设备容量和拓扑，输出 Expert 布局，并在已生效布局内为当前 token 选择副本
+- **FSEP executor**：输入当前层已经选定的 Expert 布局，负责从长期 shard 恢复本地要执行的完整物理实例；反向后再把完整梯度切开并归约回长期 shard
+- **GPU token dispatcher**：输入当前 Rank 的 Router 结果与当前已经生效的布局，立即输出当前 token 的物理实例目的地
+- **CPU expert layout tuner**：输入当前层已经观察到的负载、历史数据、设备容量和拓扑，异步输出同一层下一 iteration 使用的新布局
+
+后两项共同构成 load-balancing planner：GPU 解决当前 token 去哪里，CPU 准备未来要恢复哪些 Expert。
 
 ### FSEP：长期分片，按需恢复
 
@@ -88,7 +91,9 @@ LAER-MoE 把它拆成两个时间窗口不同的组件：
 
 #### Token dispatcher
 
-同一个专家存在多个副本时，最精确的办法是收集所有源设备的 token 数，再做一次全局分配。但这会增加一次同步，而 dispatch 正在等待结果。LAER-MoE 选择一个不依赖全局 token 统计的 lite routing：每台设备只处理自己的 token，并共享同一份专家布局。
+同一个专家存在多个副本时，最精确的办法是先收集“源 Rank × Expert”的全局 token 统计，再联合决定每个源 Rank 应该把多少 token 发给每个副本。但这会在分流前增加一次同步，而 dispatch 正在等待目的地。
+
+普通 Dispatch 交换的 per-peer 发送计数不能反过来解决这个问题：这些计数只有在 token 目的地已经确定后才能形成，是分流的结果，不是分流的先验输入。LAER-MoE 因此选择不依赖这份全局统计的 lite routing：每台设备只处理自己的 token，并共享同一份专家布局。
 
 对当前设备上的每个目标专家，规则只有两步：
 
@@ -129,29 +134,27 @@ Expert layout tuner 的工作较复杂，但它不必阻塞当前 token，因此
 
 每份副本数候选完成放置后，tuner 都用 lite routing 模拟一次 token 去向，再用同一套代价模型估算最忙设备的计算时间和拓扑相关的通信时间。最终采用预计总时间最短的布局。换句话说，贪心负责快速产生少量有希望的方案，代价模型负责在这些方案之间做最后选择。
 
-### 在线工作流：当前 token 与下一轮布局
+### 在线工作流：当前 token 与下一 iteration 布局
 
 ![LAER-MoE 的在线工作流](images/laer-workflow.png)
 
-*论文 Figure 7：CPU 异步求后续布局；GPU 继续执行当前层，布局结果只需在对应的专家参数预取 `PE` 前准备好。*
+*论文 Figure 7：CPU 为同一层的下一 iteration 异步求布局；GPU 使用已经生效的布局执行当前层，同时取回当前 iteration 下一层已经求好的布局并预取其 Expert 参数。*
 
-一层执行时，GPU 与 CPU 处理的是两种时效完全不同的决策：
+Figure 7 同时跨越 layer 和 iteration 两个维度。记 $A_L^{(i)}$ 为 iteration $i$ 中第 $L$ 个 MoE 层使用的 Expert 布局，则一层执行时有两条并行的数据流：
 
-- **当前 token 去哪里必须立即决定。** Gate 产出逻辑专家后，GPU token dispatcher 使用当前已经生效的布局，为这些 token 选择物理副本并启动 token All-to-All
-- **新的专家布局可以晚一点得到。** 当前路由统计与历史信息异步交给 CPU tuner，它在 GPU 继续通信、计算时求下一份布局
+- **当前 token 分流**：第 $L$ 层的 Gate 产生当前路由后，GPU dispatcher 立即使用已经生效的 $A_L^{(i)}$，为当前 token 选择副本并启动 token All-to-All
+- **同一层的未来布局**：当前第 $L$ 层的路由统计与历史数据同时交给 CPU tuner，CPU 求的是 $A_L^{(i+1)}$，供下一 iteration 再次执行第 $L$ 层时使用
 
-把 Figure 7 展开，流水线可以理解为：
+与此同时，当前层还承担一项跨层预取工作：
 
-- Attention 之后，Gate 得到当前层的逻辑路由
-- GPU dispatcher 根据当前布局迅速算出副本目的地，随后开始 token All-to-All
-- CPU 同时开始求新的专家布局，不阻塞这次 dispatch
-- 当前层进入 MoE 计算后，通信链路空出来；系统取回即将使用的布局，并据此预取下一层需要恢复的专家
-- 新布局必须在对应的专家预取开始前准备好，但不需要赶在当前 token dispatch 前完成
-- 反向中，临时完整专家产生的梯度再切回长期 shard，梯度同步按前述方式延迟并与专家计算重叠
+- 第 $L$ 层 token All-to-All 完成并进入 MoE 计算后，系统取回 $A_{L+1}^{(i)}$
+- 这份布局不是 CPU 刚为第 $L$ 层求出的结果，而是在此前 iteration 中已经为第 $L+1$ 层准备好的
+- 系统按 $A_{L+1}^{(i)}$ 预取下一层要恢复的 Expert 参数，并让这次参数通信与当前第 $L$ 层的 MoE 计算重叠
+- $A_{L+1}^{(i)}$ 必须在下一层参数预取开始前准备好，但 $A_L^{(i+1)}$ 不需要赶在当前第 $L$ 层的 token dispatch 前完成
 
-图里的层号表达的是这种跨层流水关系：CPU 求出的布局不会回过头改变已经发出的当前 token，而是交给后续的专家恢复阶段消费。这样既保留了 GPU dispatcher 对当前路由的即时响应，也给较慢的 CPU 布局求解留下了一整个通信与计算窗口。
+反向中，临时完整 Expert 产生的梯度再切回长期 shard，梯度同步按后文方式延迟并与 Expert 计算重叠。
 
-FSEP 与 planner 的分工至此闭合：**FSEP 让任意设备都能以规则通信恢复任意专家，planner 决定哪些恢复最值得做；GPU 解决当前 token 的去向，CPU 准备下一份可用布局。** 只有前者，系统不知道怎样利用布局自由度；只有后者，求出的好布局又会被参数迁移成本挡住。
+FSEP 与 planner 的分工至此闭合：**FSEP 让任意设备都能以规则通信恢复任意 Expert；GPU dispatcher 在当前布局内响应当前 token；CPU tuner 根据本次观测准备同一层下一 iteration 的布局。** 只有 FSEP，系统不知道怎样利用布局自由度；只有 planner，求出的布局又会被参数迁移成本挡住。
 
 ### 把布局更新藏进训练流水线
 
