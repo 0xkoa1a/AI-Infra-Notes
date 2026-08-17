@@ -56,6 +56,8 @@ $$
 
 # 负载分布的特征
 
+本节提供几个简单易计算的指标，可以用于快速把握当前负载分布的特征。它们不依赖于 layout 或 reroute，仅作为初步诊断。后续会使用更加精确的 layout-aware oracle 来评价 candidate。
+
 ## Expert 负载不均衡度
 
 **最热 Expert 是平均 Expert 负载的多少倍。**
@@ -128,7 +130,7 @@ $$
 ---
 
 
-# 解耦布局和分流
+# 解耦 Layout 和 Reroute
 
 给定当前负载 $x$ 和一个候选方案已经产生的 placement $G=\{A_e\}$，先定义这个 layout 上的合法 reroute：
 
@@ -174,12 +176,9 @@ $$
 
 ---
 
-# Layout capability：达到目标 Balance 需要多少实例
+# Layout 分析
 
-$\rho^*(x,G)$ 评价一个已经给出的 layout。现在反过来问：**为了让当前负载达到目标 $\rho_{\rm target}$，workload 理论上至少需要多少额外 Expert instances？**
-
-## Capability 参数与合法 Placement
-
+固定 layout 的 $\rho^*(x,G)$ 只回答“这套 layout 能做到多好”。要评价 workload 需要何种 placement 方案，还要依次回答三个问题：给定资源能做到多好、达到目标至少需要多少资源、一套 layout 复用多个 steps 后资源需求如何变化。
 用：
 
 $$
@@ -191,58 +190,64 @@ $$
 \right)
 $$
 
-描述系统允许的 capability：
-
-- $U_e$：Expert $e$ 允许出现的 Rank 集合。
-- $M_r$：rank $r$ 最多容纳的 Expert instances 数。
-- remap permission：基础实例能否离开当前 Rank。
-
-设当前基础 placement 为 $z^0$。如果不允许 remap，则要求：
-
-$$
-z_{er}\ge z_{er}^0,
-$$
-
-即当前实例必须保留，只能在其上增加 replicas；如果允许 remap，则基础实例可以在 $U_e$ 内重新选择。Fixed current layout 是更严格的特例 $z=z^0$。
-
-设：
-
-- $z_{er}\in\{0,1\}$：Expert $e$ 是否在 rank $r$ 上存在实例。
-- $y_{er}$：Expert $e$ 分给 rank $r$ 的 token 数。
-- 目标 bottleneck load：
-
-$$
-B_{\rm target}
-=
-\rho_{\rm target}\frac NR.
-$$
-
-合法 placement 和 reroute 满足：
+描述系统允许的 layout 空间。其中 $U_e$ 是 Expert $e$ 的合法 Rank 域，$M_r$ 是 rank $r$ 的 instance 上限，remap permission 表示基础实例能否离开当前位置。令 $z_{er}\in\{0,1\}$ 表示 Expert $e$ 是否在 rank $r$ 上存在实例，则合法 placement 满足：
 
 $$
 \begin{aligned}
 &z_{er}=0, &&r\notin U_e,\\
 &\sum_r z_{er}\ge1, &&\forall e,\\
-&\sum_e z_{er}\le M_r, &&\forall r,\\
+&\sum_e z_{er}\le M_r, &&\forall r.
+\end{aligned}
+$$
+
+设当前基础 placement 为 $z^0$：不允许 remap 时再要求 $z_{er}\ge z_{er}^0$；fixed current layout 则直接要求 $z=z^0$。
+
+## 给定资源能做到多好：$\rho_{\rm layout}^*(K)$
+
+令 $\mathcal G(K;\Theta)$ 表示满足上述约束、且额外实例数不超过 $K$ 的所有 layouts：
+
+$$
+\sum_{e,r}z_{er}-E\le K.
+$$
+
+在每个合法 layout 上使用前一章的 exact reroute oracle，定义：
+
+$$
+\rho_{\rm layout}^*(x,K;\Theta)
+=
+\min_{G\in\mathcal G(K;\Theta)}
+\rho^*(x,G).
+$$
+
+> **核心输出：$\rho_{\rm layout}^*(x,K;\Theta)$。** 它表示给定 $K$ 个额外 instances 时，合法 placement 理论上能够达到的最低 Rank imbalance。
+
+扫描 $K$ 得到 layout resource frontier。少量 $K$ 就使曲线快速下降，说明 workload 只缺少少量热点 capacity；曲线很早进入平台，则继续增加 replicas 的边际收益有限。
+
+这条曲线需要配合三个参考点阅读：
+
+- **fixed current layout**：固定 $z=z^0$，输出 $\rho^*(x,G_0)$。
+- **remap-only**：令 $K=0$，但允许在 $U_e$ 内重新选择每个基础实例的位置。
+- **remap + replication**：令 $K>0$，同时决定基础实例和 replicas 的位置。
+
+因此 $K=0$ 只表示“不增加 replica”，不表示 layout 不动。Fixed 与 remap-only 的差距衡量重新摆放基础实例的价值；remap-only 与 $K>0$ 曲线的差距衡量 replication 的价值。
+
+## 达到目标需要多少资源：$K_{\rm req}$
+
+给定目标 $\rho_{\rm target}$，令：
+
+$$
+B_{\rm target}=\rho_{\rm target}\frac NR.
+$$
+
+在合法 placement 上加入当前 step 的流守恒和 Rank load 约束：
+
+$$
+\begin{aligned}
 &\sum_r y_{er}=x_e, &&\forall e,\\
 &0\le y_{er}\le Nz_{er}, &&\forall e,r,\\
 &\sum_e y_{er}\le B_{\rm target}, &&\forall r.
 \end{aligned}
 $$
-
-$\sum_r z_{er}\ge1$ 强制每个 logical Expert 始终保留一份基础实例，即使当前 step 的 $x_e=0$ 也不能从系统中消失。
-
-正文首先假设同 layer Experts 权重大小相同，因此用 instance 数表达 memory。如果权重大小为 $w_e$，则把 Rank memory 约束替换为：
-
-$$
-\sum_e w_ez_{er}\le M_r^{\rm bytes},
-$$
-
-并把 objective 改成相对单份基础权重的额外 bytes。
-
-如果 token 必须整数分流，那么 Rank load 也是整数，约束 $L_r\le B_{\rm target}$ 实际等价于 $L_r\le\lfloor B_{\rm target}\rfloor$。若 $\rho_{\rm target}<\rho_{\rm ideal}$，目标本身不可行。
-
-## Extra-instance Requirement
 
 定义：
 
@@ -255,18 +260,9 @@ K_{\rm req}(x,\rho_{\rm target};\Theta)
 \right).
 $$
 
-它表示：**在 capability $\Theta$ 已经固定的前提下，当前负载达到目标 balance 至少需要多少额外 Expert instances。** 因此 $K_{\rm req}$ 衡量的是 extra-instance requirement，而不是脱离 placement domain 和 Rank memory 的抽象“layout freedom”。
+> **核心输出：$K_{\rm req}(x,\rho_{\rm target};\Theta)$。** 它表示当前负载达到目标 imbalance 至少需要多少额外 Expert instances。
 
-同一问题也可以反过来写成：
-
-$$
-\rho_{\rm layout}^*(x,K;\Theta)
-=
-\min_{G\in\mathcal G(K;\Theta)}
-\rho^*(x,G),
-$$
-
-其中 $\mathcal G(K;\Theta)$ 表示满足 $\Theta$ 且额外实例数不超过 $K$ 的 layouts。两者满足广义逆关系：
+它不是新的独立模型，而是上一节 resource frontier 的反问题：
 
 $$
 K_{\rm req}(x,\rho;\Theta)\le K
@@ -274,40 +270,9 @@ K_{\rm req}(x,\rho;\Theta)\le K
 \rho_{\rm layout}^*(x,K;\Theta)\le\rho.
 $$
 
-正文以“给定目标 $\rho$，求 $K_{\rm req}$”为主；扫描 $\rho_{\rm layout}^*(K)$ 用来观察增加 replica memory 后的边际收益和 elbow。
+如果 token 必须整数分流，$y_{er}$ 取整数，Rank 上界等价于 $\sum_e y_{er}\le\lfloor B_{\rm target}\rfloor$。当 $\rho_{\rm target}<\rho_{\rm ideal}$ 时，目标本身不可行。
 
-## 三个 Layout 参考点
-
-- **fixed current layout**：$z$ 固定为当前 $G_0$，只求 $\rho^*(x,G_0)$。
-- **remap-only**：要求 $\sum_{e,r}z_{er}=E$，允许在 $U_e$ 内重新放置基础实例，但不增加 replica。
-- **remap + replication**：允许 $\sum_{e,r}z_{er}\le E+K$，同时决定基础实例和 replicas 的位置。
-
-因此 $K=0$ 只表示“不增加 replica”，不表示 layout 完全不动。即使 $K_{\rm req}=0$，remap 仍然可能比 current fixed layout 明显更好。
-
-
-# Layout Requirement 的两个来源
-
-下面给出 $K_{\rm req}$ 的解析下界，并解释为什么真实 extra-instance requirement 可能高于“逐个 Expert 数 replica”的结果。相同分析也可以用来解释候选 layout 的 residual。
-
-## 单个 Expert 导致的下界
-
-如果希望每个 rank 最多承担目标负载 $B$，那么 Expert $e$ 的 token 必须至少能够到达：
-
-$$
-|A_e|
-\ge
-\left\lceil\frac{x_e}{B}\right\rceil
-$$
-
-个 ranks。完美均衡时 $B=N/R$，于是：
-
-$$
-|A_e|\ge \left\lceil Rp_e\right\rceil.
-$$
-
-> 例如，**一个 Expert 如果吃掉了全局 25% 的 token，而系统有 8 张 GPU，那么它至少需要能在约 $8\times25\%=2$ 张 GPU 上执行。**
-
-逐个 Expert 相加得到：
+**单 Expert 下界。** Expert $e$ 至少需要能够到达 $\lceil x_e/B\rceil$ 个 ranks，因此：
 
 $$
 K_{\rm indiv}(x,B)
@@ -316,52 +281,21 @@ K_{\rm indiv}(x,B)
 \max\left(
 0,
 \left\lceil\frac{x_e}{B}\right\rceil-1
-\right).
+\right)
+\le K_{\rm req}.
 $$
 
-它是 $K_{\rm req}$ 的解析 lower bound：
+完美均衡时等价于 $|A_e|\ge\lceil Rp_e\rceil$。例如一个 Expert 占全局 25% token、系统有 8 张 GPU，则它至少需要能在 2 张 GPU 上执行。
+
+**Interaction / packing 解释。** 定义辅助诊断量：
 
 $$
-K_{\rm indiv}(x,B)
-\le
-K_{\rm req}(x,\rho;\Theta).
+K_{\rm interaction}=K_{\rm req}-K_{\rm indiv}.
 $$
 
-如果候选 layout 连这个条件都不满足，那么无论 rerouter 多好，$\rho^*(x,G)$ 都不可能达到目标。
+一般 $\Theta$ 下，它还可能包含 placement domain 和 Rank memory 的影响；只有在全 placement domain、Rank memory 不绑定的基准模型中，才可将其称为 $K_{\rm packing}$。
 
----
-
-## Packing / Fragmentation Gap
-
-单 Expert 下界并不考虑多个 Experts 如何共同装入有限的 ranks。一般地先定义：
-
-$$
-K_{\rm interaction}
-=
-K_{\rm req}-K_{\rm indiv}.
-$$
-
-在 $U_e$ 覆盖全部 ranks、Rank memory 不成为额外瓶颈的基准模型中，这个差值只来自多个 Experts 共享 ranks 时的 packing / fragmentation，记作：
-
-$$
-K_{\rm packing}=K_{\rm interaction}.
-$$
-
-在一般 $\Theta$ 下，$K_{\rm interaction}$ 还可能包含 placement domain 和 Rank memory 的影响，不能全部解释成 packing。
-
-例如在上述全 placement domain、充足 Rank memory、连续自由分流的基准模型中，有 $R=3$ 个 ranks、5 个 Experts，每个 Expert 的负载都是 $N/5$，目标是 $B=N/3$。因为：
-
-$$
-\frac N5<\frac N3,
-$$
-
-每个 Expert 单独看都只需要一个实例，所以 $K_{\rm indiv}=0$。但一个 rank 放不下两个完整 Experts，因为 $2N/5>N/3$；3 个 ranks 最多容纳 3 个不拆分的 Experts，另外两个 Experts 都必须至少跨两个 ranks，因此：
-
-$$
-K_{\rm req}\ge2.
-$$
-
-两个额外实例也确实足够。例如把前三个 Experts 分别以 $N/5$ 放到三个 ranks，再令：
+例如 $R=3$、5 个 Experts 各占 $N/5$、目标 $B=N/3$。每个 Expert 单独看都不需要 replica，所以 $K_{\rm indiv}=0$；但一个 rank 无法容纳两个完整 Experts，因为 $2N/5>N/3$，因此至少两个 Experts 必须拆分，得到 $K_{\rm req}\ge2$。两个额外实例也确实足够：
 
 $$
 \begin{aligned}
@@ -370,47 +304,19 @@ e_5 &: \left(0,\frac N{15},\frac{2N}{15}\right).
 \end{aligned}
 $$
 
-三个 ranks 的总负载都恰好是 $N/3$，所以这个例子中：
+配合前三个 Experts 各自占据一个 rank，三个 ranks 的总负载都恰好为 $N/3$，所以该例中 $K_{\rm req}=K_{\rm packing}=2$。
+
+**Expert 子集诊断。** 对任意 Expert 集合 $S$，达到 bottleneck $B$ 必须满足：
 
 $$
-K_{\rm indiv}=0,
-\qquad
-K_{\rm req}=K_{\rm packing}=2.
+\sum_{e\in S}x_e\le B\,|N(S)|.
 $$
 
-## Expert 子集与 Rank 邻域
+如果多个热点 Experts 共享过小的 Rank 邻域，单独看每个 Expert 的 replica 数可能都够，联合起来仍然不可行。Max-flow 找到的最紧集合 $S$ 可以解释 $K_{\rm req}$ 或候选 layout residual 的来源，但它不是另一个核心输出。
 
-进一步考虑一组 Experts $S$。
+## Layout 复用多个 Steps 需要多少资源：$K_{\rm trace}$
 
-这些 Expert 能去的所有 ranks 的并集记作 $N(S)$。
-
-如果希望每个 rank 最多承担目标负载 $B$，必须有：**任何一组 Experts 的总流量，都不能超过“它们所有可访问 GPU”的总处理能力。**
-
-$$
-\sum_{e\in S}x_e
-\le
-B\cdot |N(S)|.
-$$
-
-例如：
-
-- Expert 1 和 Expert 2 都很热；
-- 它们虽然每个都有两个 replica；
-- 但恰好都放在 rank 0 和 rank 1。
-
-那么：
-
-- 单独看 replica 数，好像不错；
-- 但两个 Expert 的流量竞争的是同一组 GPU；
-- 依然可能无法 balance。
-
-因此评价候选 placement 时，不能只数 replica 数，还要看造成 $B^*(x,G)$ 的瓶颈集合 $S$ 是否共享了过小的 Rank 邻域。这个集合是解释 layout residual 的诊断结果，而不是新的 placement 构造规则。
-
----
-
-# 从单 Step 到 Trace：Memory--Freshness Frontier
-
-单 step 的 requirement 是：
+单 step 的 requirement 只是：
 
 $$
 K_{\rm inst}(t,\rho;\Theta)
@@ -418,23 +324,9 @@ K_{\rm inst}(t,\rho;\Theta)
 K_{\rm req}(x_t,\rho;\Theta).
 $$
 
-它假设当前负载已经知道，layout 可以为当前 step 单独决定。整条 trace 上真正需要回答的是：**如果一套 layout 必须复用 $L$ 个 steps，在目标 coverage 下至少需要多少额外实例？**
+现在要求一套 layout 固定复用 $L$ 个 steps。设 trace 有 $T$ 个 steps，phase offset 为 $o\in\{0,\ldots,L-1\}$，由此得到 placement epochs $\mathcal W_{j,o,L}$。Epoch $j$ 使用固定 placement $z^{(j)}$，但每个 step 仍可依据当前负载独立 reroute。
 
-## Placement Epoch 与 Trace SLO
-
-设 trace 包含 $T$ 个 steps。对于给定 layout reuse length $L$ 和 phase offset $o\in\{0,\ldots,L-1\}$，把 trace 划分成 placement epochs：
-
-$$
-\mathcal W_{j,o,L}.
-$$
-
-每个 epoch $j$ 使用一套固定 placement $z^{(j)}$；epoch 内每个 step 都可以根据当前真实负载独立 reroute。定义：
-
-- $h_t\in\{0,1\}$：step $t$ 是否达到目标 $\rho_{\rm target}$。
-- $K$：任意一个 epoch 允许使用的最大额外实例数。
-- $B_t=\rho_{\rm target}N_t/R$：step $t$ 的目标 bottleneck load。
-
-对 $t\in\mathcal W_{j,o,L}$，要求：
+令 $h_t\in\{0,1\}$ 表示 step $t$ 是否达到目标，$B_t=\rho_{\rm target}N_t/R$。对 $t\in\mathcal W_{j,o,L}$，要求：
 
 $$
 \begin{aligned}
@@ -443,90 +335,67 @@ $$
 &\sum_e z_{er}^{(j)}\le M_r, &&\forall r,\\
 &\sum_{e,r}z_{er}^{(j)}-E\le K,\\
 &\sum_r y_{er,t}=x_e(t), &&\forall e,\\
-&0\le y_{er,t}\le N_t z_{er}^{(j)},\\
-&\sum_e y_{er,t}
-\le
-B_t+N_t(1-h_t), &&\forall r.
+&0\le y_{er,t}\le N_tz_{er}^{(j)},\\
+&\sum_e y_{er,t}\le B_t+N_t(1-h_t), &&\forall r.
 \end{aligned}
 $$
 
-最后一行的含义是：$h_t=1$ 时必须满足目标 bottleneck；$h_t=0$ 时只取消当前 step 的目标上界，token 仍然必须由前面的流守恒约束全部执行，并不表示允许 drop token。
-
-默认 trace SLO 为：
+$h_t=0$ 只取消当前 step 的目标 bottleneck 上界，token 仍必须由流守恒约束全部执行。Trace coverage 要求：
 
 $$
 \frac1T\sum_{t=1}^T h_t\ge q,
-\qquad
-q=0.95.
+\qquad q=0.95,
 $$
 
-同时报告 $q=1$ 的 strict 结果，避免 P95 掩盖极端热点。
-
-## Trace Capability Oracle
-
-定义：
+并同时报告 strict $q=1$ 结果。最终定义：
 
 $$
 K_{\rm trace}(L,\rho,q;\Theta,o)
 =
-\min_{K,\{z^{(j)}\},\{y_t\},\{h_t\}} K.
+\min_{K,\{z^{(j)}\},\{y_t\},\{h_t\}}K.
 $$
 
-它回答：**layout 每 $L$ 个 steps 才能更新一次时，为让整条 trace 至少 $q$ 比例的 steps 达到目标 $\rho$，离线最优至少需要多少额外 instances？**
+> **核心输出：$K_{\rm trace}(L,\rho,q;\Theta,o)$。** 它表示 layout 每 $L$ 个 steps 更新一次时，为让至少 $q$ 比例的 steps 达到目标 $\rho$，离线最优至少需要多少额外 instances。
 
-- $L=1$：每个 step 都可以根据当前负载产生当前-step layout，对应 realtime placement 的纯 capability boundary。
-- $L>1$：一套 layout 必须覆盖多个 steps，量化降低 placement freshness 后需要增加多少 memory。
+$L=1$ 允许每步根据当前负载生成当前-step layout，是 realtime placement 的 workload boundary；$L>1$ 要求同一 layout 覆盖多个不同负载。这里的 $L$ 是 layout reuse length，不是热点寿命。
 
-这里没有“热点寿命”假设。$L$ 描述的是 layout reuse length，不是热点持续时间。
+该 oracle 可以看到对应 epoch 的完整负载，因此是 clairvoyant capability boundary，不是 historical policy。Historical candidate 只能使用当时已有历史，必须在后文通过 causal replay 单独评价。
 
-这个 oracle 能看到每个 epoch 内的完整负载，因此是 clairvoyant workload boundary，不是 historical placement 算法。Historical candidate 是否能仅凭过去负载接近该边界，必须通过 causal replay 单独评价。
-
-不同 phase offset 可能改变 epoch 边界。通用 workload characterization 报告：
+不同 phase offset 会改变 epoch 边界。通用 workload characterization 对同一个核心指标报告：
 
 $$
-K_{\rm trace}^{\rm median}(L,\rho,q)
+K_{\rm trace}^{\rm median}
 =
-\operatorname{median}_o
-K_{\rm trace}(L,\rho,q;\Theta,o),
-$$
-
-以及：
-
-$$
-K_{\rm trace}^{\rm worst}(L,\rho,q)
+\operatorname{median}_o K_{\rm trace}(L,\rho,q;\Theta,o),
+\qquad
+K_{\rm trace}^{\rm worst}
 =
-\max_o
-K_{\rm trace}(L,\rho,q;\Theta,o).
+\max_o K_{\rm trace}(L,\rho,q;\Theta,o).
 $$
 
-评价具体候选方案时，则使用它真实的 placement update 边界，不对 offset 取 oracle。
-
-给定 memory budget $K$，还可以反向定义允许的最大 layout reuse length：
+具体 candidate 则使用其真实 update boundary，不对 offset 取 oracle。给定 memory budget $K$ 时，也可以从同一条 frontier 反读：
 
 $$
 L_{\max}(K,\rho,q;\Theta)
 =
 \max\left\{
-L:
-K_{\rm trace}^{\rm worst}(L,\rho,q;\Theta)\le K
+L:K_{\rm trace}^{\rm worst}(L,\rho,q;\Theta)\le K
 \right\}.
 $$
 
-于是 memory--freshness trade-off 变成可计算的 frontier：增大 $K$ 是用显存覆盖更多彼此不兼容的 step-level requirements；减小 $L$ 是让 layout 更频繁地按当前负载重算。
+$L_{\max}$ 只是 $K_{\rm trace}$ 的反向读法，不是第四个独立指标。$S,C_m,D,H_m$ 也只用于解释 frontier 的形状，不能直接推出方案。
 
-$S,C_m,D,H_m$ 继续作为解释变量：它们帮助解释 $K_{\rm inst}$ 为什么大、$K_{\rm trace}$ 为什么随 $L$ 变化，但不再直接推出 replica 数或最终方案。
-
-## 只刻画给定 Trace
-
-$K_{\rm trace}$ 是 empirical capability characterization，不声称预测未来 workload。除不同 phase offsets 外，还应对 trace 做 contiguous block bootstrap，报告 $K_{\rm inst}$、coverage 和 memory--freshness frontier 的置信区间；block sampling 保留局部时间相关性，不引入额外预测模型。
+最后，$K_{\rm trace}$ 只刻画给定 trace，不声称预测未来 workload。应使用 contiguous block bootstrap 报告该 frontier 的置信区间，以保留局部时间相关性；这同样不引入热点轮转或热点寿命假设。
 
 ---
 
-# Candidate Scheme Diagnosis
+# Candidate 方案评价
 
-设候选方案 $s$ 在 step $t$ 实际产生 placement $G_t^s$、reroute $y_t^s$ 和不均衡度 $\rho_s(t)$。
+前一章给出了 workload 的 layout resource 和 freshness boundary。本章把这些离线边界用于评价实际 candidate：先判断方案的损失来自 layout 还是 rerouter，再由 workload boundary 判断方案需要具备何种 placement 性质，最后检查这些收益是否足以覆盖系统成本。三步必须按顺序进行；只看最终 latency，无法解释方案为什么有效或无效，只看 oracle，也无法判断它是否值得落地。
 
-不受 layout 限制、允许每个 Expert 到达所有 ranks 的理想下界记作 $\rho_{\rm ideal}(t)$。连续分流时它为 1；整数 token 分流时：
+## 第一步：定位 Candidate 的 Balance 缺口
+
+设候选方案 $s$ 在 step $t$ 实际产生 placement $G_t^s$、reroute $y_t^s$ 和不均衡度 $\rho_s(t)$。不受 layout 限制、允许每个 Expert 到达所有 ranks 的理想下界记作 $\rho_{\rm ideal}(t)$。连续分流时它为 1；整数 token 分流时：
 
 $$
 \rho_{\rm ideal}(t)
@@ -534,113 +403,98 @@ $$
 \frac{\lceil N_t/R\rceil}{N_t/R}.
 $$
 
-候选方案与理想值的差距分成两部分：
+在 candidate 实际产生的 layout 上运行 exact reroute oracle，就可以把总差距严格拆成：
 
 $$
 \rho_s(t)-\rho_{\rm ideal}(t)
 =
 \underbrace{
-\rho^*(x_t,G_t^s)
--\rho_{\rm ideal}(t)
+\rho^*(x_t,G_t^s)-\rho_{\rm ideal}(t)
 }_{\text{layout residual}}
 +
 \underbrace{
-\rho_s(t)
--\rho^*(x_t,G_t^s)
+\rho_s(t)-\rho^*(x_t,G_t^s)
 }_{\text{reroute gap}}.
 $$
 
-- **layout residual**：candidate 实际产生的 layout 即使使用最优 reroute 仍然无法消除的部分。
-- **reroute gap**：这个 layout 本来能够做到，但 candidate 的实际 rerouter 没有做到的部分。
+- **layout residual**：candidate 的 layout 即使使用最优 reroute 仍然无法消除的部分。
+- **reroute gap**：这套 layout 本来能够做到，但 candidate 的实际 rerouter 没有做到的部分。
 
-连续 token 和整数 token 是两套不同的评价模型；计算 residual / gap 时，$\rho_{\rm ideal}$、$\rho^*$ 与 candidate result 必须使用同一套模型。
+因此两项的含义不同：layout residual 大，应检查 placement 使用的资源和 freshness；layout residual 小而 reroute gap 大，才说明主要问题在实际分流。连续 token 和整数 token 是两套不同的评价模型，$\rho_{\rm ideal}$、$\rho^*$ 与 candidate result 必须始终使用同一套模型。
 
-Candidate replay 必须严格因果：
+这项诊断只有在 replay 因果时才有意义：
 
-- historical placement 只能使用当时已经观察到的负载，并施加真实的统计、更新和生效延迟；
-- realtime placement 每一步使用当前负载产生当前 $G_t^s$，并让新 layout 服务当前 step；
-- capability oracle 与 candidate 结果分栏报告，不能用 clairvoyant $K_{\rm trace}$ 冒充 historical placement 的实际表现。
+- historical placement 只能使用决策时已经观察到的负载，并施加真实的统计、planning、更新和生效延迟；
+- realtime placement 每一步使用当前负载产生当前 $G_t^s$，并让它服务当前 step；
+- clairvoyant $K_{\rm trace}$ 只作为 workload boundary，与实际 candidate 分栏报告，不能冒充 historical policy 的结果。
 
-除 residual / gap 外，还要比较 candidate 的 instance budget 和真实 update interval 是否超过 workload boundary：如果资源明显高于 $K_{\rm trace}$ 但 layout residual 仍大，说明 placement 没有有效利用已有 freedom；如果 layout residual 小但 reroute gap 大，问题在实际 rerouter。
+## 第二步：判断 Workload 需要何种 Placement 性质
 
----
+Gap decomposition 告诉我们 candidate 哪里损失了 balance；前一章的三个核心指标进一步回答应该补充哪种 layout 能力。判断顺序是 fixed / remap、replication、freshness，后一个判断只在前一个仍不足时才有意义。
 
-# 选择不同的负载均衡方案
+**先判断是否需要改变 current layout。** 比较 fixed current layout 与 remap-only：
 
-方案选择不再从 $S$ 或 $H_m$ 直接跳到某个算法，而是依次检查 capability boundary、candidate gap 和系统成本。
+- 如果 fixed layout 的 $\rho^*$ 已接近 $\rho_{\rm ideal}$，且实际 reroute gap 也很小，那么 layout 和 reroute 都没有明显改进空间。
+- 如果 fixed layout residual 大，但 $\rho_{\rm layout}^*(x,0;\Theta)$ 已达到目标，说明无需额外 replicas，重新摆放基础实例即可。
+- 因而 $K_{\rm req}=0$ 不能推出“无需 placement LB”；它只表示 remap-only 已经足够。
 
-## 第一步：当前 Layout 与 Remap-only
+**Remap-only 仍不足时，再判断需要多少 replication。** 查看 $\rho_{\rm layout}^*(K)$ 和 $K_{\rm req}$：
 
-- 如果 current fixed layout 的 $\rho^*$ 已接近 $\rho_{\rm ideal}$，实际 reroute gap 也很小，那么 layout 和 reroute 都没有明显改进空间。
-- 如果 fixed layout residual 大，但 remap-only 的 $\rho_{\rm layout}^*(x,0;\Theta)$ 已达到目标，说明不需要额外 replicas，重新摆放基础实例就足够。
-- $K_{\rm req}=0$ 不能单独推出“无需复杂 LB”，因为 remap 本身仍可能带来很大收益。
+- 少量 $K$ 就使 $\rho_{\rm layout}^*(K)$ 快速下降并进入平台，说明 workload 只缺少少量热点 capacity。
+- $K_{\rm indiv}$ 已经很大，说明少数 Expert 的单体 peak load 要求较高 replication degree。
+- 在基准模型中 $K_{\rm packing}$ 占主要部分，说明多个 Experts 的 packing / fragmentation 才是主要来源；一般 $\Theta$ 下还要排除 placement domain 和 Rank memory 的影响。
 
-## 第二步：需要多少 Replication
+**空间资源确定后，最后判断需要多高 freshness。** 比较 $K_{\rm trace}(L,\rho,q)$：
 
-扫描 $\rho_{\rm layout}^*(K)$：
+- $L$ 增大后 requirement 基本不变：一套 layout 可以覆盖较长区间，workload 不要求高 placement freshness；historical policy 能否接近该边界仍由 causal replay 决定。
+- $L=1$ requirement 较低，但随 $L$ 增大明显上升：不同 steps 的 layout requirements 彼此不兼容。在既定 memory 下，需要 per-step realtime placement，或者接受更低 coverage / 更高 $\rho$。
+- 所有 $L$ 下 requirement 都很高：问题是空间 capacity 不足，提高 placement freshness 无法替代 replication。
 
-- 少量 $K$ 就让 $\rho_{\rm layout}^*(K)$ 快速下降并进入平台，说明 workload 主要缺少少量热点 capacity。
-- $K_{\rm indiv}$ 已经很大，说明少数 Expert 的单体 peak load 就要求高 replication degree。
-- 在基准模型中 $K_{\rm packing}$ 占主要部分，说明问题来自多个 Experts 在 ranks 上的 packing / fragmentation，而不只是单热点。一般 $\Theta$ 下应先分解 $K_{\rm interaction}$ 中的 domain 和 memory 约束，不能直接归因给 packing。
+这里 realtime placement 始终表示：**每个 step 使用当前负载重新计算当前-step layout。** 它的价值来自 $L=1$ 相对较大 $L$ 的 capability 改善，不依赖热点在未来继续存在。
 
-## 第三步：需要多高的 Placement Freshness
+Candidate 的资源使用也要与 workload boundary 对齐：如果 instance budget 和 update frequency 已经优于边界要求，layout residual 却仍然很大，说明不是 workload 要求过高，而是 placement policy 没有有效利用已有 freedom。
 
-比较 $K_{\rm trace}(L,\rho,q)$：
+## 第三步：判断 Balance 收益是否值得系统成本
 
-- $L$ 增大后 requirement 基本不变：一套 layout 可以覆盖较长区间，historical placement 具有足够的 workload capability；它是否真的可用，还要看 causal candidate replay。
-- $L=1$ requirement 不高，但 $L$ 增大后 requirement 明显上升：每个 step 自身不需要很多 replicas，但不同 steps 的 layout requirements 彼此不兼容。此时若不增加 memory，就需要 per-step realtime placement。
-- 所有 $L$ 下 requirement 都很高：更实时的 placement 不能消除纯空间 capacity 不足，仍需要更多 replicas 或接受较高 $\rho$。
+前两步回答 candidate 改善了什么，以及 workload 是否真的需要这种能力。最后一步才把 balance 收益转换为端到端收益。
 
-Realtime placement 在这里始终表示：**每个 step 使用当前负载重新计算当前-step layout。** 它的价值由 $L=1$ capability 相对低 freshness capability 的改善决定，不依赖热点在后续 steps 中持续存在。
-
-## 第四步：端到端 Worth-it Gate
-
-上述三步回答“什么 layout 能力有用”；最终仍要检查它节省的 compute critical path 是否超过 planning、weight preparation、通信和 kernel fragmentation 的 exposed cost。因而最后的决策不是一个脱离资源的排名，而是：
-
-> **在达到目标 coverage 的候选方案中，选择满足 memory、movement 和通信约束的 E2E Pareto 点。**
-
----
-
-# 端到端收益分析
-
-假设当前 step 的总 Expert 工作量在完美均衡时需要时间 $C$。如果原始 imbalance 是 $\rho_0$，负载均衡后是 $\rho_1$，那么仅考虑 expert compute：有**理想 expert compute 时间乘以负载不均衡倍率，就是实际 bottleneck compute 时间。**
+假设当前 step 在完美均衡时的 Expert compute 时间为 $C$，原始 imbalance 为 $\rho_0$，candidate 降低到 $\rho_1$，则：
 
 $$
-T_0\approx \rho_0 C,
+T_0^{\rm expert}\approx\rho_0C,
 \qquad
-T_1\approx \rho_1 C.
+T_1^{\rm expert}\approx\rho_1C,
 $$
 
-因此理想的 compute speedup 直接约等于负载不均衡度的比值
+仅考虑 Expert compute 时，理想 speedup 为：
 
 $$
-\text{Speedup}\approx\frac{\rho_0}{\rho_1}.
+\text{Speedup}_{\rm expert}
+\approx
+\frac{\rho_0}{\rho_1}.
 $$
 
-但系统真正需要判断的是**值不值得做**。
-
-设：
-
-- $\Delta T_{\rm comm}$：reroute 引起的通信时间变化。
-- $H_{\rm plan}^{\rm exposed}$：负载均衡计算暴露在关键路径上的开销。
-- $H_{\rm move}^{\rm exposed}$：weight preparation / movement 暴露在关键路径上的开销。
-- $\Delta T_{\rm kernel}$：token 被切到更多 replicas 后，kernel 粒度变化引起的时间差。
-
-那么负载均衡值得做的条件是：**因为减少长尾而省下来的 compute 时间，必须大于它在同一条关键路径上新增的系统时间。**
+但 placement / reroute 同时会改变通信、planning、weight movement 和 kernel efficiency。定义 candidate 的净关键路径收益：
 
 $$
+\Delta T_{\rm net}
+=
 (\rho_0-\rho_1)C
->
-\Delta T_{\rm comm}
-+H_{\rm plan}^{\rm exposed}
-+H_{\rm move}^{\rm exposed}
-+\Delta T_{\rm kernel}.
+-\Delta T_{\rm comm}
+-H_{\rm plan}^{\rm exposed}
+-H_{\rm move}^{\rm exposed}
+-\Delta T_{\rm kernel}.
 $$
 
-这里只应该加入 exposed cost：如果 planning、movement 或通信已经与其他阶段重叠，就不能再把原始 duration 完整相加。$\Delta T_{\rm comm}$ 也不一定为正；改变目的 Rank 后，通信长尾可能变好，也可能变差。
+其中：
 
-这个式子可以解释为什么：
+- $\Delta T_{\rm comm}$ 是 reroute 引起的通信时间变化，可以为正或负。
+- $H_{\rm plan}^{\rm exposed}$ 是 placement / reroute planning 真正暴露在关键路径上的部分。
+- $H_{\rm move}^{\rm exposed}$ 是 weight preparation / movement 暴露在关键路径上的部分。
+- $\Delta T_{\rm kernel}$ 是 token 被切到更多 replicas 后，小 batch 或 kernel fragmentation 引起的时间变化。
 
-- training / prefill 更值得做；decode 未必值得做；
-- historical placement 可以接受一定滞后，因为它把 weight movement 移出了当前 critical path；
-- realtime placement 每一步都必须带来明显更低的 layout residual，才能补偿当前 step 的 planning / moving cost。
+Candidate 只有在 $\Delta T_{\rm net}>0$ 时才产生正的端到端收益。这里只计算 exposed cost：已经与其他阶段重叠的 duration 不能再次完整相加。
+
+这也解释了不同方案的适用边界：training / prefill 的 $C$ 较大，更容易覆盖 LB 成本；decode 的 compute saving 较小，未必值得复杂 placement。Historical placement 可以把部分 movement 移出当前 critical path，但承担 stale-layout residual；realtime placement 没有历史滞后，却必须在当前 step 内支付 planning / movement 成本，因此需要带来足够大的即时 balance 改善。
+
+最终不应生成一个脱离资源约束的 candidate 总分，而应在达到目标 coverage 的方案中，选择 memory、movement、communication 与 E2E latency 的 Pareto 点。
