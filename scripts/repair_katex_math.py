@@ -129,6 +129,10 @@ def repair_inline_parentheses(text: str) -> str:
             continue
 
         def replace(match: re.Match[str]) -> str:
+            # Do not reinterpret parentheses that are already inside $...$.
+            prefix = line[: match.start()]
+            if len(re.findall(r"(?<!\\)\$", prefix)) % 2:
+                return match.group(0)
             body = match.group(1)
             return f"${body.strip()}$" if is_inline_math(body) else match.group(0)
 
