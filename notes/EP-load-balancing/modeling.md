@@ -77,7 +77,7 @@ $$
 例如两种分布：
 
 - A：一个 Expert 50%，其他很均匀。
-- B：四个 Exp`erts 各 12.5%，其他很均匀。
+- B：四个 Experts 各 12.5%，其他很均匀。
 
 它们可能 peak load 类似，但对 placement 的要求完全不同。
 
@@ -143,15 +143,13 @@ $$
 
 这里先允许连续分流。若 $x_e$ 是整数，也可以要求 $y_{er}$ 为整数；在当前网络流模型中，整数最优解仍然可以精确求出。评价实际 rerouter 时，oracle 必须采用与实际方案相同的分流粒度，否则 reroute gap 会混入 granularity gap。
 
-定义固定 layout 下的最优 bottleneck load：
+定义固定 layout 下的最优 bottleneck load：**placement 固定以后，哪怕给我世界上最好的分流算法，最少还能剩多少负载不均衡。**
 
 $$
 B^*(x,G)=\min_{\text{合法 reroute}}\max_r L_r,
 \qquad
 \rho^*(x,G)=\frac{B^*(x,G)}{N/R}.
 $$
-
-它表示：**placement 固定以后，哪怕给我世界上最好的分流算法，最少还能剩多少负载不均衡。**
 
 ## 给定 layout 的最优 reroute 可以精确求出
 
@@ -172,11 +170,11 @@ B^*(x,G)
 \frac{\sum_{e\in S}x_e}{|N_G(S)|},
 $$
 
-其中 $N_G(S)=\bigcup_{e\in S}A_e$。整数 token 情况对右侧整体取 ceiling。实际计算不需要枚举所有 $S$，max-flow 会隐式找到造成瓶颈的 Expert 集合。
+其中 $S$ 是任意 Expert 集合，$N_G(S)=\bigcup_{e\in S}A_e$。整数 token 情况对右侧整体取 ceiling。实际计算不需要枚举所有 $S$，max-flow 会隐式找到造成瓶颈的 Expert 集合。
 
 ## 评价一个候选方案
 
-设候选方案 $s$ 在当前 step 产生 placement $G^s$ 和实际 reroute，最终不均衡度为 $\rho_s$。同样分流粒度下，不受 layout 限制的理想下界记作 $\rho_{\rm ideal}$：连续分流时 $\rho_{\rm ideal}=1$；整数分流时：
+设候选方案 $s$ 在当前 step 产生 placement $G^s$ 和实际 reroute，最终不均衡度为 $\rho_s$。固定 layout 下的最优 bottleneck load 为 $\rho^*(x,G^s)$。同样分流粒度下，不受 layout 限制的理想下界记作 $\rho_{\rm ideal}$：连续分流时 $\rho_{\rm ideal}=1$；整数分流时：
 
 $$
 \rho_{\rm ideal}
@@ -184,7 +182,7 @@ $$
 \frac{\lceil N/R\rceil}{N/R}.
 $$
 
-于是：
+于是候选方案 $s$ 与理想方案的差距可以分解为 layout residual 和 reroute gap 两部分：
 
 $$
 \rho_s-\rho_{\rm ideal}
