@@ -225,6 +225,10 @@ $$
 
 # 解耦 Layout 和 Reroute
 
+> 本章的目标是把“layout 好不好”和“reroute 算法好不好”彻底解耦。
+> 前一章已经用 workload statistics 判断了方案需要的空间能力和时间能力。本章转向实际 candidate：用候选方案的 layout oracle 计算出最优 reroute 下的负载不均衡度 $\rho^*(x,G)$。将候选方案的负载不均衡度 $\rho$ 与 $\rho^*(x,G)$ 对比，即可定位主要性能损失来自 layout 还是 rerouter。
+> 这种解耦极大地优化了数学建模的复杂度，避免了对 layout + reroute 联合建模。
+
 给定当前负载 $x$ 和一个候选方案已经产生的 placement $G=\{A_e\}$，先定义这个 layout 上的合法 reroute：
 
 $$

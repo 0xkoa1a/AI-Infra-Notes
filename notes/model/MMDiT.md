@@ -1,6 +1,6 @@
 ---
 title: "MMDiT：Multimodal Diffusion Transformer"
-order: 1
+order: 2
 ---
 
 # MMDiT：Multimodal Diffusion Transformer
