@@ -11,7 +11,7 @@ import { createSidebar } from "./plugins/sidebar.js";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const sourceDir = path.join(rootDir, "notes");
-const base = process.env.GITHUB_ACTIONS === "true" ? "/Inference-Infra-Notes/" : "/";
+const base = process.env.GITHUB_ACTIONS === "true" ? "/AI-Infra-Notes/" : "/";
 
 const config: UserConfig = {
   base,
