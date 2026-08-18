@@ -20,6 +20,8 @@ order: 1
 
 先采用一个理想化的 compute 模型：所有 token 的计算代价相同、所有 ranks 同构，并且暂时忽略通信拓扑和小 batch 对 kernel efficiency 的影响。
 
+> 负载不均衡只存在于 token 的接收侧，发送侧每个 rank 的 token 数量都是一样的，所以这里的建模不考虑 token 的发送侧，以避免引入不必要的复杂性。
+
 ## Expert compute 的负载代理
 
 如果分给 Expert $e$ 在 rank $r$ 上的实例 $y_{er}$ 个 token，那么 rank $r$ 一共处理 $\sum_e y_{er}$ 个 token。这一层 Expert compute 的完成时间由 $\max_r\sum_e y_{er}$ 决定。
