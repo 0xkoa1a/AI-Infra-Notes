@@ -3,7 +3,9 @@ title: "EP 负载均衡：数学建模"
 order: 1
 ---
 
-**给定一条随时间变化的 Expert 负载 trace 和目标 Rank imbalance，先求 workload 所需的 layout resource 与 placement freshness，再诊断候选方案距离这些能力边界还有多远，最后判断端到端收益是否值得系统成本。**
+# 目标
+
+**给定一条随时间变化的 Expert 负载分布和目标 Rank imbalance，分析负载分布的特征，得到一些核心指标，再据此判断候选负载均衡方案的性能收益。**
 
 # 问题 Setup
 
@@ -22,7 +24,7 @@ order: 1
 
 > 负载不均衡只存在于 token 的接收侧，发送侧每个 rank 的 token 数量都是一样的，所以这里的建模不考虑 token 的发送侧，以避免引入不必要的复杂性。
 
-## Expert compute 的负载代理
+## Rank 负载不均衡度
 
 如果分给 Expert $e$ 在 rank $r$ 上的实例 $y_{er}$ 个 token，那么 rank $r$ 一共处理 $\sum_e y_{er}$ 个 token。这一层 Expert compute 的完成时间由 $\max_r\sum_e y_{er}$ 决定。
 
@@ -46,7 +48,7 @@ $$
 
 # 负载分布的特征
 
-本节从 workload 本身提取简单、可直接计算的指标，用来判断负载均衡方案需要具备什么性质。它们不依赖某个 candidate layout；后文再用 fixed-layout oracle 评价实际方案，只有简单指标无法解释结果时才调用附录中的 Global Layout Oracle。
+本节从负载均衡分布本身提取简单、直观、容易计算的指标，用来观察和刻画负载分布的特性。后文我们将基于这些特性指导负载分布方案的选择。
 
 ## Expert 负载不均衡度
 
@@ -136,7 +138,7 @@ $$
 
 $K_{\rm replica}$ 是 target-aware 的一阶 layout pressure，不是全局精确最小 replica 数。它没有考虑多个 Experts 的 packing、可访问 Rank 邻域、placement domain 和 Rank memory；这些因素显著时，需要使用文末的 Global Layout Oracle。
 
-## 精确负载变化
+## 负载分布的时间变化：细粒度
 
 可以看一个非常简单的 lag-$\Delta$ drift：**隔了 $\Delta$ 个 step 后，有多少比例的负载质量“搬到了别的 Experts”。**
 
@@ -162,7 +164,7 @@ $$
 
 ---
 
-## 粗粒度负载变化
+## 负载分布的时间变化：粗粒度
 
 因为 placement 并不一定需要预测“Expert 17 下一步到底是 5372 个还是 6141 个 token”。
 
@@ -283,7 +285,7 @@ $$
 
 ---
 
-# 从负载特征判断所需 LB 性质
+# 从负载特征判断所需负载均衡方案的性质
 
 正文的判断不再从 workload statistics 跳到全局最优 placement，而是先用简单指标识别方案需要的空间能力和时间能力：
 
@@ -319,7 +321,7 @@ $$
 
 ---
 
-# Candidate 方案评价
+# 负载均衡方案评价
 
 前一章已经用 workload statistics 判断了方案需要的空间能力和时间能力。本章转向实际 candidate：先用 fixed-layout oracle 判断损失来自 layout 还是 rerouter，再检查 candidate 是否具备 workload 所需的 replication 与 freshness，最后判断 balance 收益能否覆盖系统成本。
 
@@ -358,7 +360,7 @@ $$
 - realtime placement 每一步使用当前负载产生当前 $G_t^s$，并让它服务当前 step；
 - 附录中的 clairvoyant Global Layout Oracle 只能作为可选验证边界，与实际 candidate 分栏报告，不能冒充 historical policy 的结果。
 
-## 第二步：判断 Workload 需要何种 Placement 性质
+## 第二步：Layout 分析
 
 Gap decomposition 告诉我们 candidate 哪里损失了 balance；轻量 workload metrics 则判断 candidate 是否具有正确的方案性质。
 
@@ -380,6 +382,8 @@ Realtime placement 在这里始终表示：**每个 step 使用当前负载重�
 最后比较简单指标与 fixed-layout residual。如果 candidate 已满足 $K_{\rm replica}$ 所示的 replication 深度和宽度，layout residual 仍然很大，说明一阶 pressure 没有捕获 remap、packing、重叠邻域、placement domain 或 Rank memory 问题；此时才调用附录中的 Global Layout Oracle 精确定位，而不是让所有 workload 默认进入 MILP 流程。
 
 ## 第三步：判断 Balance 收益是否值得系统成本
+
+> 实践中，不同负载均衡方案的实现方式差异很大，planning、weight movement、communication 何时做、如何做、和什么重叠等问题各有不同。用一个统一的框架量化所有方案的端到端总收益并不现实。因此本节只给出一个收益-成本的分析思路，具体量化分析需要结合方案的实际实现细节。
 
 前两步回答 candidate 改善了什么，以及 workload 是否真的需要这种能力。最后一步才把 balance 收益转换为端到端收益。
 
@@ -426,7 +430,9 @@ Candidate 只有在 $\Delta T_{\rm net}>0$ 时才产生正的端到端收益。�
 
 ---
 
-# 附录：精确 Global Layout Capability Oracle
+# 附录：精确 Global Layout Capability Oracle（Work In Progress）
+
+前文根据负载分布的简单指标判断 candidate layout 是否具有正确的 replication 深度、宽度和 placement freshness。它们是轻量、直观、容易计算的，但是无法包括 packing、重叠的 Rank 邻域等复杂因素。附录包含一份 MILP oracle，给出在当前 layout constraints 下，给定负载和目标 imbalance 时理论上能够达到的最优 layout。
 
 Fixed-layout oracle $\rho^*(x,G)$ 用于正文中的常规 candidate 诊断。本附录进一步优化 placement 本身，只在简单 replica pressure 无法解释结果、怀疑 packing / placement-domain / memory pathology，或确实需要精确 resource frontier 时使用。它不是所有 workload 都必须执行的主流程。
 
