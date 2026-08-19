@@ -37,7 +37,7 @@ const config: UserConfig = {
     containerPlugin({ type: "tip", locales: { "/": { defaultInfo: "提示" } } }),
     containerPlugin({ type: "warning", locales: { "/": { defaultInfo: "注意" } } }),
     containerPlugin({ type: "danger", locales: { "/": { defaultInfo: "危险" } } }),
-    mdEnhancePlugin({ katex: true, tasklist: true, flowchart: true }),
+    mdEnhancePlugin({ katex: true, tasklist: true, flowchart: true, echarts: true }),
     searchPlugin({
       locales: { "/": { placeholder: "搜索文档" } },
       maxSuggestions: 10,
