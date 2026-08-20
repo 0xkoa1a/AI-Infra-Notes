@@ -1,4 +1,11 @@
-# 引言
+---
+title: "DisagMoE"
+order: 1
+---
+
+# DisagMoE
+
+## 引言
 
 这篇是 **DisagMoE: Computation-Communication overlapped MoE Training via Disaggregated AF-Pipe Parallelism**，2026 年 5 月提交。和前面的 MoE-Prefill 不同，它研究的是**大规模 MoE 训练**，核心问题仍然是跨节点 EP 的 dispatch/combine 通信。([arXiv][1])
 
@@ -24,7 +31,7 @@ DisagMoE 改成：
 
 ---
 
-# 背景 / 相关工作
+## 背景 / 相关工作
 
 ## 跨节点 EP 的通信为什么严重
 
@@ -192,7 +199,7 @@ $$
 
 ---
 
-# 动机
+## 动机
 
 ## 为什么 Comet/Tutel 仍然盖不住通信
 
@@ -262,7 +269,7 @@ $$
 
 ---
 
-# 方法
+## 方法
 
 整个方法可以分成三个依赖关系明确的部分：
 
@@ -322,7 +329,7 @@ FFN 同理。
 
 ---
 
-# AF-Pipe
+## AF-Pipe
 
 仅仅把 Attention 和 FFN 放到不同 GPU 上是不够的。
 
@@ -352,7 +359,7 @@ FFN 同理。
 
 ---
 
-# 把 All-to-All 变成 M-to-N / N-to-M
+## 把 All-to-All 变成 M-to-N / N-to-M
 
 拆开 A/F worker 后，传统 EP 的 collective 形式也发生变化。
 
@@ -391,7 +398,7 @@ AF-Pipe 把这些 stage boundary communication 融合为统一的 M2N/N2M commun
 
 ---
 
-# 把 communication 当作 pipeline stage
+## 把 communication 当作 pipeline stage
 
 这是 AF-Pipe 和普通 PP 的另一个区别。
 
@@ -431,7 +438,7 @@ send / receive 也使用独立 ProcessGroup 异步推进。([arXiv][2])
 
 ---
 
-# Adaptive worker allocation
+## Adaptive worker allocation
 
 到这里已经有 overlap 了，但还缺最后一个问题：
 
@@ -496,7 +503,7 @@ $$
 
 ---
 
-# 为什么长序列会改变 GPU 配比
+## 为什么长序列会改变 GPU 配比
 
 这也是 DisagMoE 与这条 long-sequence survey 关系最密切的地方。
 
@@ -554,7 +561,7 @@ $$
 
 ---
 
-# 效果
+## 效果
 
 论文在最多 **16 节点 × 8 H800 = 128 GPU** 的集群上实现 DisagMoE，基于 Megatron-LM / PyTorch 2.6，使用 GPUDirect/GDRCopy 实现 M2N/N2M communication；测试 DeepSeek-MoE、GPT-OSS-120B 和 Qwen3 类配置，sequence length 覆盖 **4K–32K**。([arXiv][2])
 
@@ -590,7 +597,7 @@ DualPipe 减少 **45%**。([arXiv][2])
 
 ---
 
-# 延伸
+## 延伸
 
 ## 与 MoE-Prefill 的区别
 
@@ -707,7 +714,7 @@ DisagMoE 的核心就是想办法**解除 Attention compute 与 FFN communicatio
 
 因此，**并不是因为 combine 必然出现在关键路径上，所以必须把 GPU 拆成 A/F 两组。** 如果下一段 Attention 足够长，combine 一样可以藏在里面。论文也明确说，Lancet/DualPipe 已经利用不同 microbatch 的计算去隐藏通信。([arXiv][1])
 
-# 你的方案什么时候已经足够好
+## 你的方案什么时候已经足够好
 
 把同一组 GPU 上的稳态简化成：
 
@@ -765,7 +772,7 @@ $$
 
 所以 DisagMoE 真正的理由不在这里。
 
-# 真正的问题：GPU 和 NIC 不能独立分配
+## 真正的问题：GPU 和 NIC 不能独立分配
 
 这是论文真正想解决的东西。
 
@@ -815,7 +822,7 @@ Attention 和 FFN 被迫共享**相同的 GPU:NIC 配比**。
 
 ---
 
-# 一个具体例子
+## 一个具体例子
 
 假设有 32 张 GPU。
 
@@ -826,7 +833,7 @@ Attention 和 FFN 被迫共享**相同的 GPU:NIC 配比**。
 
 理想情况下：
 
-### 你的方案
+## 你的方案
 
 32 张 GPU 全部：
 
@@ -851,7 +858,7 @@ Attention 和 FFN 被迫共享**相同的 GPU:NIC 配比**。
 
 这时“多给 FFN GPU”可能并不划算。
 
-### DisagMoE
+## DisagMoE
 
 改成：
 
@@ -872,7 +879,7 @@ Attention 和 FFN 被迫共享**相同的 GPU:NIC 配比**。
 
 论文的 adaptive allocation 正是在搜索这个 balance。它不是简单追求 `A || F`，而是同时调整 **A/F GPU 数和 NIC bandwidth allocation**。([arXiv][1])
 
-# 那 combine 到底是不是一个问题？
+## 那 combine 到底是不是一个问题？
 
 **是问题，但不是你这里的根本问题。**
 
@@ -908,7 +915,7 @@ C1
 
 但如果我们讨论的是你这个**没有额外 PP boundary**的简化场景，这一点确实不是决定性因素。
 
-# 所以可以这样理解两种设计
+## 所以可以这样理解两种设计
 
 你的方案解决的是：
 

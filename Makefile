@@ -24,6 +24,7 @@ check:
 	@$(NODE) --version | sed 's/^/node /'
 	@$(PNPM) --version | sed 's/^/pnpm /'
 	@test -x "$(CURDIR)/node_modules/.bin/vuepress" || { echo "依赖未安装，请先运行 make install"; exit 1; }
+	@$(NODE) scripts/check-headings.mjs
 
 install:
 	$(PNPM) install --frozen-lockfile

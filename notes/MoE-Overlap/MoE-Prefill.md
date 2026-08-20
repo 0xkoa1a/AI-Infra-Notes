@@ -1,4 +1,11 @@
-# 引言
+---
+title: "MoE-Prefill"
+order: 2
+---
+
+# MoE-Prefill
+
+## 引言
 
 你给的 arXiv ID `2605.02960` 当前是 **v2（2026-05-15）**，标题为 **MoE-Prefill: Zero Redundancy Overheads in MoE Prefill Serving**；早期版本常被称为 **ZeRO-Prefill**。它研究的不是一般在线 Chat/Decode，而是 **MoE 模型的 prefill-only serving**。([arxiv.org](https://arxiv.org/abs/2605.02960))
 
@@ -34,7 +41,7 @@ GPU 上的 token + 当前层全部 experts
 
 它真正改变的不是“AllToAll 怎么做得更快”，而是：**对于长、大 batch、compute-bound 的 prefill，为什么一定要移动 activation，而不能移动 weight？** ([arxiv.org](https://arxiv.org/pdf/2605.02960))
 
-# 背景 / 相关工作
+## 背景 / 相关工作
 
 ## Prefill-only workload
 
@@ -97,7 +104,7 @@ Expert offloading 的典型问题是：Router 之后才知道需要哪些 expert
 
 MoE-Prefill 不预测“下一层哪些 expert 会热门”，而利用**层执行顺序确定**这一点，直接准备下一层**完整 expert set**。因此不存在 cache miss，也不依赖 popularity；代价是即使某个 expert 没有 token 命中，也会被搬运。论文追求的不是最少 byte，而是让这些 byte **离开 critical path**。([arxiv.org](https://arxiv.org/pdf/2605.02960))
 
-# 动机
+## 动机
 
 论文的核心动机是：
 
@@ -132,7 +139,7 @@ weight:   =================
 * **C2 Performance**：per-layer critical path 上不能有 synchronous collective；
 * **C3 Balance**：routing skew 不能让某张 GPU 成为 layer straggler。([arxiv.org](https://arxiv.org/pdf/2605.02960))
 
-# 方法
+## 方法
 
 MoE-Prefill 由 **frontend scheduler + AsyncEP backend** 组成。Frontend 决定“哪些请求去哪张 GPU、如何成 batch”；backend 决定“这批请求怎样执行”。二者通过一个 **saturation threshold $T$** 联动。([arxiv.org](https://arxiv.org/pdf/2605.02960))
 
@@ -218,7 +225,7 @@ AsyncEP communication 被隐藏
 
 所以 **AsyncEP 提供 overlap 的可能性，scheduler 保证实际 workload 真能提供 overlap window**。([arxiv.org](https://arxiv.org/pdf/2605.02960))
 
-# 效果
+## 效果
 
 论文在 **Qwen3-235B-A22B（128 experts，Top-8，约 22B active parameters）** 上测试 A100/H100/H200、BF16/FP8 等配置。相对最强 distributed baseline：
 
@@ -230,7 +237,7 @@ AsyncEP communication 被隐藏
 
 通过 weight offloading / KV 策略，它还把 Qwen3-235B-A22B 的部署范围从传统方案需要的 **至少约 4 GPU** 扩展到 **1–8 GPU**。([arxiv.org](https://arxiv.org/pdf/2605.02960))
 
-# 延伸
+## 延伸
 
 从“长序列计算通信掩盖”的视角，它和 FasterMoE、Lancet、Comet 的根本区别是：
 

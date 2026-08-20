@@ -2,7 +2,9 @@
 title: "Mixture-of-Experts"
 order: 1
 ---
-# 动机
+# Mixture-of-Experts
+
+## 动机
 
 Mixture-of-Experts（MoE）的核心目标是：**在保持每个 token 的计算量较小的情况下，继续扩大模型参数量。**
 
@@ -31,7 +33,7 @@ MoE 同时追求实现三个目标：
 
 这三个目标之间存在天然冲突。Router 越自由，越容易产生 specialization，但也越容易发生 collapse；balance 约束越强，Expert 使用越均匀，但 Router 的 specialization 自由度也越小。因此，现代 MoE 的主要算法问题通常是**如何设计和训练 Router**。
 
-# 基本结构
+## 基本结构
 
 对于 token $x$，一层 MoE 可以抽象为：
 - **Router** 根据 $x$ 判断应该使用哪些 Expert。
@@ -69,7 +71,7 @@ $$
 * $g_i(x)$ 是被选择 Expert 的组合权重。
 * $k$ 通常远小于 Expert 总数 $E$。
 
-# Router
+## Router
 
 ## 基本结构
 
@@ -378,7 +380,7 @@ $$
 
 z-loss 不直接要求 Expert 负载均匀，而是限制 Router logits 不要无意义地不断增大。
 
-# Expert
+## Expert
 
 ## 基本结构
 

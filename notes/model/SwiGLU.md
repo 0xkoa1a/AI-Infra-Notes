@@ -1,3 +1,7 @@
+---
+title: "SwiGLU"
+---
+
 # SwiGLU
 
 SwiGLU 是一种常用于 Transformer FFN 的激活结构。它可以理解为：**让 FFN 的一条支路产生内容，另一条支路产生一个数据依赖的门，然后逐元素相乘。**

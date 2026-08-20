@@ -3,7 +3,7 @@ title: "Global Memory Coalescing"
 order: 5
 ---
 
-## Global Memory Coalescing
+# Global Memory Coalescing
 
 DRAM 的每次访问都会传输一整行数据（buy one get x free）。
 

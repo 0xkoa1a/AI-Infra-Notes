@@ -3,11 +3,13 @@ title: "EP 负载均衡：数学建模"
 order: 1
 ---
 
-# 目标
+# EP 负载均衡：数学建模
+
+## 目标
 
 **给定一条随时间变化的 Expert 负载分布和目标 Rank imbalance，分析负载分布的特征，得到一些核心指标，再据此判断候选负载均衡方案的性能收益。**
 
-# 问题 Setup
+## 问题 Setup
 
 先固定**一个 layer、一个 step**。设：
 
@@ -46,7 +48,7 @@ $$
 
 ---
 
-# 负载分布的特征
+## 负载分布的特征
 
 本节从负载均衡分布本身提取简单、直观、容易计算的指标，用来观察和刻画负载分布的特性。后文我们将基于这些特性指导负载分布方案的选择。
 
@@ -223,7 +225,7 @@ $$
 ---
 
 
-# 解耦 Layout 和 Reroute
+## 解耦 Layout 和 Reroute
 
 > 本章的目标是把“layout 好不好”和“reroute 算法好不好”彻底解耦。
 > 前一章已经用 workload statistics 判断了方案需要的空间能力和时间能力。本章转向实际 candidate：用候选方案的 layout oracle 计算出最优 reroute 下的负载不均衡度 $\rho^*(x,G)$。将候选方案的负载不均衡度 $\rho$ 与 $\rho^*(x,G)$ 对比，即可定位主要性能损失来自 layout 还是 rerouter。
@@ -289,7 +291,7 @@ $$
 
 ---
 
-# 从负载特征判断所需负载均衡方案的性质
+## 从负载特征判断所需负载均衡方案的性质
 
 正文的判断不再从 workload statistics 跳到全局最优 placement，而是先用简单指标识别方案需要的空间能力和时间能力：
 
@@ -325,7 +327,7 @@ $$
 
 ---
 
-# 负载均衡方案评价
+## 负载均衡方案评价
 
 前一章已经用 workload statistics 判断了方案需要的空间能力和时间能力。本章转向实际 candidate：先用 fixed-layout oracle 判断损失来自 layout 还是 rerouter，再检查 candidate 是否具备 workload 所需的 replication 与 freshness，最后判断 balance 收益能否覆盖系统成本。
 
@@ -434,7 +436,7 @@ Candidate 只有在 $\Delta T_{\rm net}>0$ 时才产生正的端到端收益。�
 
 ---
 
-# 附录：精确 Global Layout Capability Oracle（Work In Progress）
+## 附录：精确 Global Layout Capability Oracle（Work In Progress）
 
 前文根据负载分布的简单指标判断 candidate layout 是否具有正确的 replication 深度、宽度和 placement freshness。它们是轻量、直观、容易计算的，但是无法包括 packing、重叠的 Rank 邻域等复杂因素。附录包含一份 MILP oracle，给出在当前 layout constraints 下，给定负载和目标 imbalance 时理论上能够达到的最优 layout。
 
