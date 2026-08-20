@@ -108,9 +108,9 @@
 
   #toc {
     position: absolute;
-    inset-inline-start: calc(100% + 1rem);
-    min-width: 10rem;
-    max-width: 15rem;
+    inset-inline-start: calc(100% + var(--article-toc-gap, 1rem));
+    min-width: var(--article-toc-width, 15rem);
+    max-width: var(--article-toc-width, 15rem);
     margin-bottom: 0;
     border-radius: 0;
     background: transparent;
@@ -124,6 +124,13 @@
     margin: 0;
   }
 
+}
+
+@media (min-width: 1920px) {
+  :root {
+    --sidebar-width: 360px;
+    --sidebar-width-mobile: calc(var(--sidebar-width) * 0.82);
+  }
 }
 
 @media print {

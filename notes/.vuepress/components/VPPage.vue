@@ -73,5 +73,15 @@ defineSlots<{
       padding-inline: 2.5rem;
     }
   }
+
+  // On very wide screens, keep the article as the visual anchor instead of
+  // centering the combined article + outline group in the remaining space.
+  @media (min-width: 1920px) {
+    --sidebar-width: 360px;
+    --content-width: 827px;
+    --article-content-offset: 123px;
+    --article-toc-gap: 80px;
+    --article-toc-width: 220px;
+  }
 }
 </style>

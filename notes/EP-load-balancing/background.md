@@ -66,7 +66,7 @@ flowchart LR
 | 维度 | 历史布局 + 实时分流 | 全实时布局 + 实时分流 |
 | --- | --- | --- |
 | Placement 信号 | 历史或预测负载，或预先设置的布局 | 当前 microbatch、当前层的精确负载 |
-| Reroute 信号 | 当前 Router 输出；EPLB 不包含分流 | 当前 Router 输出或完整路由 |
+| Reroute 信号 | 当前 Router 输出 | 当前 Router 输出或完整路由 |
 | 权重准备 | 低频或异步完成，可在当前层执行前生效 | 参数准备进入当前层关键路径 |
 | 代表工作 | EPLB（只做布局）、LPLB、FineMoE、LAER-MoE | UltraEP、MoonEP |
 
