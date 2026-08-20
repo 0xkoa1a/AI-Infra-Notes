@@ -26,7 +26,7 @@ order: 1
 
 > 负载不均衡只存在于 token 的接收侧，发送侧每个 rank 的 token 数量都是一样的，所以这里的建模不考虑 token 的发送侧，以避免引入不必要的复杂性。
 
-## Rank 负载不均衡度
+### Rank 负载不均衡度
 
 如果分给 Expert $e$ 在 rank $r$ 上的实例 $y_{er}$ 个 token，那么 rank $r$ 一共处理 $\sum_e y_{er}$ 个 token。这一层 Expert compute 的完成时间由 $\max_r\sum_e y_{er}$ 决定。
 
@@ -52,7 +52,7 @@ $$
 
 本节从负载均衡分布本身提取简单、直观、容易计算的指标，用来观察和刻画负载分布的特性。后文我们将基于这些特性指导负载分布方案的选择。
 
-## Expert 负载不均衡度
+### Expert 负载不均衡度
 
 **最热 Expert 是平均 Expert 负载的多少倍。**
 
@@ -62,7 +62,7 @@ $$
 E\max_e\frac{x_e(t)}{N_t}.
 $$
 
->   ## Expert 负载集中度
+>   ### Expert 负载集中度
 > 
 >   把 Experts 按负载从高到低排好，负载集中度衡量**最热的 $m$ 个 Experts 一共吃掉多少负载。**
 > 
@@ -83,7 +83,7 @@ $$
 > 
 >   $\operatorname{TopShare}_m$ 曲线说明额外 capacity 是集中在一个 Expert，还是分散在一组 Experts 上。它可以提示 placement 需要覆盖多少个热点，但不能单独决定 replica 数量或具体 layout。
 
-## Target-aware Replica Pressure
+### Target-aware Replica Pressure
 
 Expert 负载不均衡度 $S$ 和负载集中度 $C_m$ 描述了负载形状，但还没有把它连接到系统的 rank 数和目标 balance。给定目标 $\rho$，每个 rank 允许承担的最大负载为：
 
@@ -140,7 +140,7 @@ $$
 
 $K_{\rm replica}$ 是 target-aware 的一阶 layout pressure，不是全局精确最小 replica 数。它没有考虑多个 Experts 的 packing、可访问 Rank 邻域、placement domain 和 Rank memory；这些因素显著时，需要使用文末的 Global Layout Oracle。
 
-## 负载分布的时间变化：细粒度
+### 负载分布的时间变化：细粒度
 
 可以看一个非常简单的 lag-$\Delta$ drift：**隔了 $\Delta$ 个 step 后，有多少比例的负载质量“搬到了别的 Experts”。**
 
@@ -166,7 +166,7 @@ $$
 
 ---
 
-## 负载分布的时间变化：粗粒度
+### 负载分布的时间变化：粗粒度
 
 因为 placement 并不一定需要预测“Expert 17 下一步到底是 5372 个还是 6141 个 token”。
 
@@ -254,7 +254,7 @@ B_{\rm rank}^*(x,G)
 \rho^*(x,G)=\frac{B_{\rm rank}^*(x,G)}{N/R}.
 $$
 
-## 给定 layout 的最优 reroute 可以精确求出
+### 给定 layout 的最优 reroute 可以精确求出
 
 对于一个候选 Rank bottleneck load $B_{\rm rank}$，构造下面的 flow network：
 
@@ -331,7 +331,7 @@ $$
 
 前一章已经用 workload statistics 判断了方案需要的空间能力和时间能力。本章转向实际 candidate：先用 fixed-layout oracle 判断损失来自 layout 还是 rerouter，再检查 candidate 是否具备 workload 所需的 replication 与 freshness，最后判断 balance 收益能否覆盖系统成本。
 
-## 第一步：定位 Candidate 的 Balance 缺口
+### 第一步：定位 Candidate 的 Balance 缺口
 
 设候选方案 $s$ 在 step $t$ 实际产生 placement $G_t^s$、reroute $y_t^s$ 和不均衡度 $\rho_s(t)$。不受 layout 限制、允许每个 Expert 到达所有 ranks 的理想下界记作 $\rho_{\rm ideal}(t)$。连续分流时它为 1；整数 token 分流时：
 
@@ -366,7 +366,7 @@ $$
 - realtime placement 每一步使用当前负载产生当前 $G_t^s$，并让它服务当前 step；
 - 附录中的 clairvoyant Global Layout Oracle 只能作为可选验证边界，与实际 candidate 分栏报告，不能冒充 historical policy 的结果。
 
-## 第二步：Layout 分析
+### 第二步：Layout 分析
 
 Gap decomposition 告诉我们 candidate 哪里损失了 balance；轻量 workload metrics 则判断 candidate 是否具有正确的方案性质。
 
@@ -387,7 +387,7 @@ Realtime placement 在这里始终表示：**每个 step 使用当前负载重�
 
 最后比较简单指标与 fixed-layout residual。如果 candidate 已满足 $K_{\rm replica}$ 所示的 replication 深度和宽度，layout residual 仍然很大，说明一阶 pressure 没有捕获 remap、packing、重叠邻域、placement domain 或 Rank memory 问题；此时才调用附录中的 Global Layout Oracle 精确定位，而不是让所有 workload 默认进入 MILP 流程。
 
-## 第三步：判断 Balance 收益是否值得系统成本
+### 第三步：判断 Balance 收益是否值得系统成本
 
 > 实践中，不同负载均衡方案的实现方式差异很大，planning、weight movement、communication 何时做、如何做、和什么重叠等问题各有不同。用一个统一的框架量化所有方案的端到端总收益并不现实。因此本节只给出一个收益-成本的分析思路，具体量化分析需要结合方案的实际实现细节。
 
@@ -467,7 +467,7 @@ $$
 
 设当前基础 placement 为 $z^0$：不允许 remap 时再要求 $z_{er}\ge z_{er}^0$；fixed current layout 则直接要求 $z=z^0$。
 
-## 给定资源能做到多好：$\rho_{\rm layout}^*(K)$
+### 给定资源能做到多好：$\rho_{\rm layout}^*(K)$
 
 令 $\mathcal G(K;\mathcal C_{\rm layout})$ 表示满足上述 layout constraints、且额外实例数不超过 $K$ 的所有 layouts：
 
@@ -496,7 +496,7 @@ $$
 
 因此 $K=0$ 只表示“不增加 replica”，不表示 layout 不动。Fixed 与 remap-only 的差距衡量重新摆放基础实例的价值；remap-only 与 $K>0$ 曲线的差距衡量 replication 的价值。
 
-## 达到目标需要多少资源：$K_{\rm req}$
+### 达到目标需要多少资源：$K_{\rm req}$
 
 给定目标 $\rho_{\rm target}$，令：
 
@@ -589,7 +589,7 @@ $$
 
 如果多个热点 Experts 共享过小的 Rank 邻域，单独看每个 Expert 的 replica 数可能都够，联合起来仍然不可行。Max-flow 找到的最紧 Expert 子集可以解释 $K_{\rm req}$ 或候选 layout residual 的来源，但它不是另一个核心输出。
 
-## Layout 复用多个 Steps 需要多少资源：$K_{\rm trace}$
+### Layout 复用多个 Steps 需要多少资源：$K_{\rm trace}$
 
 单 step 的 requirement 直接使用 $K_{\rm req}(x_t,\rho;\mathcal C_{\rm layout})$，不再为它引入另一套符号。
 

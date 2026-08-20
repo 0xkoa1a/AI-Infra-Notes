@@ -39,7 +39,7 @@
   padding: 0 0 0 8px;
 }
 
-.vp-toc-list::before {
+.vp-toc-wrapper > .vp-toc-list::before {
   position: absolute;
   inset-inline-start: 4px;
   top: 0;
