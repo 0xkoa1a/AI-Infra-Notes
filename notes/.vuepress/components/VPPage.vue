@@ -55,5 +55,23 @@ defineSlots<{
       padding-top: 0;
     }
   }
+
+  @media (min-width: 1440px) {
+    --article-content-offset: max(
+      1rem,
+      calc((100% - var(--content-width) - 5rem - var(--article-toc-rail, 16rem)) / 2)
+    );
+
+    > [vp-content],
+    > .vp-page-meta,
+    > .vp-page-nav {
+      margin-inline-start: var(--article-content-offset);
+      margin-inline-end: 0;
+    }
+
+    > .vp-page-nav {
+      padding-inline: 2.5rem;
+    }
+  }
 }
 </style>

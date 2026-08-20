@@ -1,3 +1,5 @@
+@use "./diagrams";
+
 /* Theme-hope-inspired article TOC. The rail is outside the content column. */
 .vp-toc-placeholder {
   position: sticky;
@@ -100,10 +102,7 @@
 @media (min-width: 1440px) {
   .vp-toc-placeholder {
     display: block;
-    margin-inline-start: max(
-      1rem,
-      calc((100% - var(--content-width) - 5rem - var(--article-toc-rail, 16rem)) / 2)
-    );
+    margin-inline-start: var(--article-content-offset);
     margin-inline-end: 0;
   }
 
@@ -125,13 +124,6 @@
     margin: 0;
   }
 
-  .vp-page > [vp-content] {
-    margin-inline-start: max(
-      1rem,
-      calc((100% - var(--content-width) - 5rem - var(--article-toc-rail, 16rem)) / 2)
-    );
-    margin-inline-end: 0;
-  }
 }
 
 @media print {

@@ -1,0 +1,23 @@
+:root {
+  --infra-placement: #6f42c1;
+  --infra-reroute: #2369d8;
+  --infra-history: #0f8277;
+  --infra-planning: #6f42c1;
+  --infra-token-flow: #2369d8;
+  --infra-weight-flow: #c45a18;
+  --infra-execution: #0f8277;
+  --infra-diagram-line: #c2c2c4;
+  --infra-diagram-muted: #60646c;
+}
+
+[data-theme="dark"] {
+  --infra-placement: #b08cff;
+  --infra-reroute: #78a9ff;
+  --infra-history: #57c7b7;
+  --infra-planning: #b08cff;
+  --infra-token-flow: #78a9ff;
+  --infra-weight-flow: #f0a06a;
+  --infra-execution: #57c7b7;
+  --infra-diagram-line: #525257;
+  --infra-diagram-muted: #a8a8ad;
+}

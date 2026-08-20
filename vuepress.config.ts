@@ -32,7 +32,7 @@ export default defineUserConfig({
   base,
   lang: "zh-CN",
   title: "AI Infra 知识库",
-  description: "AI 推理与训练基础设施学习笔记",
+  description: "AI 基础设施学习笔记",
   dest: path.join(rootDir, "_site"),
   pagePatterns: ["**/*.md", "!**/README.md"],
   alias: {
@@ -60,6 +60,7 @@ export default defineUserConfig({
     markdownExtPlugin({ tasklist: true }),
     markdownChartPlugin({
       echarts: true,
+      mermaid: true,
       DANGEROUS_ALLOW_SCRIPT_EXECUTION: true,
       DANGEROUS_SCRIPT_EXECUTION_ALLOWLIST: ["model/SwiGLU.md"],
     }),

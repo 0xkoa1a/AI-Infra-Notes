@@ -15,12 +15,14 @@ type Section = {
 };
 
 const SECTIONS: Section[] = [
+  { directory: "X-Stage", text: "X-Stage" },
   { directory: "EP-load-balancing", text: "EP Load Balancing" },
   { directory: "misc", text: "Misc" },
   { directory: "cuda", text: "CUDA" },
   { directory: "model", text: "Model" },
   { directory: "parallel", text: "Parallel" },
   { directory: "flash-attn", text: "FlashAttention" },
+  { directory: "MoE-Overlap", text: "MoE Overlap" },
 ];
 
 function unquote(value: string): string {
@@ -55,15 +57,5 @@ function listSection(sourceDir: string, section: Section): SidebarGroup {
 }
 
 export function createSidebar(sourceDir: string): SidebarConfig {
-  const roots = ["XStage.md", "XStage-modeling.md"].map((file) => readPage(sourceDir, file));
-
-  return [
-    { text: "技术信息", link: "/technical-info.html" },
-    {
-      text: "建模基础",
-      collapsible: true,
-      children: roots.map((page) => ({ text: page.title, link: page.link })),
-    },
-    ...SECTIONS.map((section) => listSection(sourceDir, section)),
-  ];
+  return SECTIONS.map((section) => listSection(sourceDir, section));
 }

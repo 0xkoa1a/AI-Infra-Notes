@@ -41,3 +41,9 @@ order: 1
 专题目录中的 Markdown 会按 `order` 自动加入左侧导航；新增一级专题目录时，在 `plugins/sidebar.ts` 的 `SECTIONS` 中登记一次。图片放在所属专题旁的 `images/` 目录，并使用相对路径引用。
 
 根目录的 `README.md`、`TODO.md`、源码仓、PDF/PPTX 和附件不属于站点输入。生成的 `_site/`、VuePress 缓存和 `node_modules/` 不进入 Git。
+
+## 写作与呈现
+
+正文知识优先使用 Markdown；明确的数据流、时序和简单拓扑使用 Mermaid；只有当颜色、分组、复杂布局或交互本身参与解释时才使用 Vue 组件。文章内不维护用于排版的大段 `<style>` 或 Raw HTML。
+
+完整的内容保护、组件组织与验证规则见 [AGENTS.md](./AGENTS.md)。
