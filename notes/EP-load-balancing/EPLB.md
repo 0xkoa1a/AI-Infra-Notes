@@ -219,4 +219,4 @@ EPLB 不改变 Router 的逻辑路由，只调整实例数与布局。因此启�
 - 它包含重排，而且算法不考虑重排开销
   - 算法可能（经常）给出一个大规模搬家的输出
 
-![eplb-imbalance](images/eplb-imbalance.png)
+![eplb-imbalance](./images/eplb-imbalance.png)

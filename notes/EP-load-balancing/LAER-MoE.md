@@ -49,7 +49,7 @@ FSEP 中同时存在两种形态：
 - **长期分片**：每台设备都保存 $E$ 个小块，每块是对应专家的 $1/N$。合起来看，一台设备长期持有的专家参数总量仍然只相当于 $E/N$ 个完整专家
 - **临时完整专家**：进入前向或反向前，每台设备根据当前布局恢复 $C$ 个完整专家；这些完整参数只服务这一段计算，长期状态仍是下面那组分片
 
-![FSEP 的 shard、unshard 与 reshard](images/laer-fsep.png)
+![FSEP 的 shard、unshard 与 reshard](./images/laer-fsep.png)
 
 *论文 Figure 4：左侧是参数从长期分片恢复成完整专家，右侧是完整专家梯度重新归约成长期分片。*
 
@@ -138,7 +138,7 @@ Expert layout tuner 的工作较复杂，但它不必阻塞当前 token，因此
 
 ### 在线工作流：当前 token 与下一 iteration 布局
 
-![LAER-MoE 的在线工作流](images/laer-workflow.png)
+![LAER-MoE 的在线工作流](./images/laer-workflow.png)
 
 *论文 Figure 7：CPU 为同一层的下一 iteration 异步求布局；GPU 使用已经生效的布局执行当前层，同时取回当前 iteration 下一层已经求好的布局并预取其 Expert 参数。*
 
@@ -164,7 +164,7 @@ FSEP 与 planner 的分工至此闭合：**FSEP 让任意设备都能以规则�
 
 传统 FSDP 会在计算当前单元时预取下一个单元。直接套到异构 Transformer 上，往往意味着在 Attention 期间预取 MoE Expert 参数。问题是 Attention 和 MoE 的耗时差异很大：Attention 留出的窗口可能太短，Expert 参数还没收齐，MoE 就只能等待。
 
-![FSEP 的通信调度](images/laer-communication-schedule.png)
+![FSEP 的通信调度](./images/laer-communication-schedule.png)
 
 *论文 Figure 5：蓝色是前向或反向计算，黄色是 token All-to-All，粉色是参数预取或梯度同步。*
 

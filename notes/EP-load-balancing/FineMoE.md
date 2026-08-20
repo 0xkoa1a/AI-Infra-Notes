@@ -35,7 +35,7 @@ FineMoE 的核心不是为每个 microbatch 迁移 Expert，而是利用数据�
 
 下图的四卡例子把分流空间如何一步步扩大画得很清楚。形状表示 token 的源 GPU，颜色表示 Router 选中的 Expert；底部同色曲线连接同一 Expert 的 EDP 副本。图中 `MicroEP` 是 FineEP 的旧称。
 
-![FineEP 分流空间：从 Vanilla EP、合并 EP group 到打散布局（论文 Figure 3）](images/finemoe-scheduling-space.png)
+![FineEP 分流空间：从 Vanilla EP、合并 EP group 到打散布局（论文 Figure 3）](./images/finemoe-scheduling-space.png)
 
 - **Vanilla EP**：每个 token 只能发给自己所在 EP group 内的目标 Expert。Router 结果确定逻辑 Expert，固定布局又唯一确定该 Expert 所在的 GPU，因此没有副本选择空间。图中两个 EP group 的最大负载分别为 12 和 10
 - **只合并 EP group**：token 可以在同一 Expert 的 EDP 副本之间转移，但各 EP group 仍使用相同布局。于是不同 Expert 的 EDP group 要么完全相同、要么互不相交：图中 $E_0/E_1$ 只能在 GPU 0、2 之间均衡，$E_2/E_3$ 只能在 GPU 1、3 之间均衡。局部最优以后，全局最大负载仍是 11
@@ -95,7 +95,7 @@ LP 只能在 $\mathcal G_e$ 中分配 Expert $e$ 的 token，因此布局直接�
 - 当一个 Expert 恰好有两个副本时，hyperedge 就退化成普通边
 - Expert 的 token 总数是这条边的权重；token 只能沿同一条边所覆盖的顶点重新分配
 
-![FineMoE 的布局图抽象：GPU 是顶点，Expert 是边（论文 Figure 5）](images/finemoe-placement-graph.png)
+![FineMoE 的布局图抽象：GPU 是顶点，Expert 是边（论文 Figure 5）](./images/finemoe-placement-graph.png)
 
 理解布局瓶颈的关键，是看“负载为什么会困在一组 GPU 里”。假设一组 GPU 最终都达到了最优解中的最大负载：
 
@@ -159,7 +159,7 @@ FineEP 的 LP 使用当前 microbatch 的精确 Router 结果，所以不可能�
 - **普通 overlap**：Megatron-LM 在 Gate 与 All-to-All 之间还要做 Top-k token 复制，并按专家索引 permute。FineMoE 让 CPU 求解与这段 GPU permutation 同时执行。只要 permutation 足够长，LP 和 routing 的大部分延迟就不会暴露
 - **Pipelining**：如果框架在 Gate 后没有足够长的 GPU 工作可供重叠，就把 token 分为两部分。前一部分按普通 EP 准备并先启动 All-to-All；CPU 同时为后一部分计算 FineEP 方案，随后再发起后一部分的 FineEP All-to-All。规划时还要把前一部分已经留给各 GPU 的负载考虑进去
 
-![FineEP 普通执行与 pipelining 的时序对比（论文 Figure 14，图中 MicroEP 为旧称）](images/finemoe-scheduling-pipeline.png)
+![FineEP 普通执行与 pipelining 的时序对比（论文 Figure 14，图中 MicroEP 为旧称）](./images/finemoe-scheduling-pipeline.png)
 
 Pipelining 不是默认路径。它把一次 All-to-All 拆成两次，会增加同步、通信启动和 kernel launch 开销；只有普通 overlap 无法隐藏较长求解时间，而这些额外开销又足够小时，它才可能更划算。
 

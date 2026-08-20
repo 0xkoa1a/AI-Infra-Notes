@@ -7,7 +7,7 @@ order: 6
 
 ## Roofline 模型
 
-![roofline](images/roofline.png)
+![roofline](./images/roofline.png)
 
 横轴是算术强度（Arithmetic Intensity），纵轴是吞吐量。
 - 算术强度衡量单位数据上执行的计算量，即数据被复用的程度，单位是 FLOPS/Byte。

@@ -15,11 +15,11 @@ order: 6
 
 为应对可变长度的输入，现有训练系统通常采用样本级打包（sample-level packing）策略，即将多个较短序列拼接为一个 micro batch，并限制其总 token 长度不超过目标序列长度。
 
-![packed-samples](images/packed-samples.png)
+![packed-samples](./images/packed-samples.png)
 
 尽管这三个打包后的 micro batch 具有相同的总序列长度，但由于点积注意力的计算复杂度与序列长度是二次关系，它们的计算负载（执行时间）并不相同。
 
-![attn计算不均衡](images/attn-imbalance.png)
+![attn计算不均衡](./images/attn-imbalance.png)
 
 这种执行时间的不均衡会导致：
 - DP 中，先执行完成的 DP rank 在梯度同步时需要等待未完成的 DP rank，造成 DP imbalanced bubble
@@ -45,7 +45,7 @@ CP 的通信量和序列长度成线性关系。当某些 micro batch 的总序�
 
 ***
 
-![Dynamic-CP-优势](images/dynamic-cp-advantages.png)
+![Dynamic-CP-优势](./images/dynamic-cp-advantages.png)
 
 上图是一个 DP=2, VPP=8 的例子。
 - 横轴表示时间，纵轴表示 DP rank 及物理 pipeline stage。

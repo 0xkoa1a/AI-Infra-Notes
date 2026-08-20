@@ -9,17 +9,17 @@ DRAM 的每次访问都会传输一整行数据（buy one get x free）。
 
 同一个 warp 中，连续的线程访问连续的 global memory 地址时，硬件可以将这些访问合并。
 
-![coalesced-loads](images/coalesced-loads.png)
+![coalesced-loads](./images/coalesced-loads.png)
 
-![un-coalesced-loads](images/un-coalesced-loads.png)
+![un-coalesced-loads](./images/un-coalesced-loads.png)
 
-![coalescing-for-mm](images/coalescing-for-mm.png)
+![coalescing-for-mm](./images/coalescing-for-mm.png)
 
 上图中，如果在同一时刻每个线程访问矩阵的不同行，则它们访问的 global memory 地址不连续，硬件无法将这些访问合并。
 
 应该总是将**连续的线程映射到矩阵的连续维度**。
 
-![tile-alignment](images/tile-alignment.png)
+![tile-alignment](./images/tile-alignment.png)
 
 一个 burst section 通常为 32 字节，需要保证 tile 的内存布局与 burst section 对齐。
 ***

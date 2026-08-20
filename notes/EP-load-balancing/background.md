@@ -60,7 +60,7 @@ Token-Owned 布局，按 Router 权重加权合并
 
 要设计负载均衡器，先看它面对的是什么样的负载。EP 的负载分布完全由 Router 输出决定.
 
-![Prefill 场景中的专家负载分布示例](images/prefill-load-dist.png)
+![Prefill 场景中的专家负载分布示例](./images/prefill-load-dist.png)
 
 负载在两个维度上表现出明显不同的规律，这两条规律最终决定了各家工作的范式分歧。
 
@@ -431,7 +431,7 @@ Token-Owned 布局，按 Router 权重加权合并
 
 它们能做到 exact 且实时，代价是**规划开销和 Expert 权重搬运开销直接进入关键路径**。
 
-![critical-path](images/critical-path.png)
+![critical-path](./images/critical-path.png)
 
 ## 训练、Prefill 与 Decode
 

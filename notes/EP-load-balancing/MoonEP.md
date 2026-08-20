@@ -526,7 +526,7 @@ B 先当发送方、超额送出之后转为接收方，再由 C 补齐。**这�
 
 借这件事分四步：留出地方放、决定借哪几个、把权重搬过来、让 GEMM 用上。
 
-![weight-layout](images/weight_buffer.png)
+![weight-layout](./images/weight_buffer.png)
 
 #### 留出地方：一段连续的 $[E+B]$ 行
 
@@ -707,7 +707,7 @@ MoonEP 的分配表恰好就是这个信息：前文那个「全局序号落在�
 - `zero_copy=True` 时，Dispatch 返回通信 buffer 的视图，FFN 必须直接读取并原地写回这块视图；Combine 会检查输入确实与该 shard 共用同一地址
 - 只有后一条路径消除了 FFN 与通信边界上的 copy，并把“通信结果就是计算输入/输出”真正兑现为零拷贝
 
-![与 DeepEP 对比](images/comm_vs_deepep.png)
+![与 DeepEP 对比](./images/comm_vs_deepep.png)
 
 MoonEP 的 combine 柱子是纯蓝的，没有 planning 和 prefetch。这是因为 combine 复用 dispatch 存下来的 plan，不必再规划；权重也已经在槽位里，不必再预取。
 

@@ -33,7 +33,7 @@ LPLB 把负载均衡拆成两个时间尺度：
 
 在线阶段输出的则是当前 batch 的实际执行方案。它保留 Router 选择的逻辑 Expert，只把“由哪个物理实例执行”补充完整。Token Dispatch、Expert 计算、梯度同步以及真正的权重迁移仍由上层训练系统负责。
 
-![LPLB 的低频布局与逐 Batch 在线分流（依据源码整理）](images/lplb-workflow.png)
+![LPLB 的低频布局与逐 Batch 在线分流（依据源码整理）](./images/lplb-workflow.png)
 
 ### 副本图怎样生成
 
@@ -159,7 +159,7 @@ Cube 模板覆盖 8 个 Rank。第一组 Expert 沿下面两条四卡环放置�
 
 两套边叠加以后，8 个 Rank 被连接成仓库所称的 Cube with diagonal edges。下图把两组边分开画出；箭头只表示“源 Rank 的这组热 Expert 在目标 Rank 上建立副本”。
 
-![Cube 模板中两组热 Expert 使用不同的 Rank 配对（依据源码整理）](images/lplb-cube-topology.png)
+![Cube 模板中两组热 Expert 使用不同的 Rank 配对（依据源码整理）](./images/lplb-cube-topology.png)
 
 Cube 的直觉不是“token 沿立方体传很多跳”，而是：
 

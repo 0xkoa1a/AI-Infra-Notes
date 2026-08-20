@@ -1,10 +1,8 @@
 
 Repo 技术栈：
-- 迁移到 VitePress？
+- 不迁移到 VitePress。原因：丑 + 默认不带动画
 - 支持全文模糊搜索
-    - VitePress 天然支持
 - 文章 Outline
-    - VitePress 天然支持
 - 如何让 Agent 使用 Vue 前端组件画架构图
 - 让 Agent 画交互式小组件
 - Vue 组件调用 Plotly 等可视化库
