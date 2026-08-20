@@ -10,3 +10,7 @@ Repo 技术栈：
 - Vue 组件调用 Plotly 等可视化库
 - **Single HTML packaging**：将单个页面打包成一个可分享 HTML 文件，保留样式、交互式组件、图表。
     - 打包时采用与知识库不同的，专门用于对外展示的样式
+
+CUDA 中的流水线建模：不同 tile 调度方式会影响 L2 cache hit rate，进而影响数据搬运的带宽。考虑一下这部分的建模。
+
+TileSight
