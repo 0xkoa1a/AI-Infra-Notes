@@ -258,8 +258,24 @@ $$
 
 对于一个候选 Rank bottleneck load $B_{\rm rank}$，构造下面的 flow network：
 
-```text
-source --x_e--> Expert e --∞--> r ∈ A_e --B_rank--> sink
+```mermaid
+flowchart LR
+    S["source"] -->|"x_e · 每个 Expert e"| E["Expert e"]
+    E -->|"∞ · 仅允许 r ∈ A_e"| R1["Rank r₁"]
+    E -->|"∞ · 仅允许 r ∈ A_e"| R2["Rank r₂"]
+    E -->|"∞ · 仅允许 r ∈ A_e"| R3["Rank r₃"]
+    R1 -->|"B_rank"| T["sink"]
+    R2 -->|"B_rank"| T
+    R3 -->|"B_rank"| T
+
+    classDef source fill:#f6f6f7,stroke:#60646c,color:#2c2c30
+    classDef expert fill:#eee8ff,stroke:#6f42c1,color:#3e2670
+    classDef rank fill:#e8f1ff,stroke:#2369d8,color:#153b78
+    classDef sink fill:#e8f6f2,stroke:#0f8277,color:#075b50
+    class S source
+    class E expert
+    class R1,R2,R3 rank
+    class T sink
 ```
 
 如果最大流能够送出全部 $N$ 个 token，那么 $B_{\rm rank}$ 可行。对 $B_{\rm rank}$ 做搜索，就能得到精确的 $B_{\rm rank}^*(x,G)$。当 token 数和容量都是整数时，网络流的整数性保证结果也是整数 reroute。
@@ -290,50 +306,67 @@ $$
 因为给定 layout 之后最优 reroute 相对比较好求，这一部分的讨论比较简略。
 
 ---
+## 从负载特征判断并评价负载均衡方案
 
-## 从负载特征判断所需负载均衡方案的性质
-
-正文的判断不再从 workload statistics 跳到全局最优 placement，而是先用简单指标识别方案需要的空间能力和时间能力：
-
-$$
-\boxed{
-\left\{x_e(t)/N_t\right\}_{e=1}^{E}
-\rightarrow
-\operatorname{PeakSkew},
-\operatorname{TopShare}_m,
-n_{\max}^{\rm loc},
-E_{\rm replica},
-K_{\rm replica}
-\rightarrow
-\operatorname{LoadDrift},
-\operatorname{HotspotOverlap}_m,
-\operatorname{ReplicaOverlap}
-\rightarrow
-\text{所需 placement / reroute 性质}
-}
-$$
-
-空间上，$n_{\max}^{\rm loc}$ 判断少数热点需要多深的 replication，$E_{\rm replica}$ 和 $\operatorname{TopShare}_m$ 判断需要覆盖多宽的热点集合，$K_{\rm replica}$ 给出由单 Expert overload 产生的一阶总 pressure。时间上，$\operatorname{LoadDrift}$ 判断精确流量是否需要 realtime reroute，$\operatorname{ReplicaOverlap}$ 判断旧 placement 对当前 replica demand 是否仍有覆盖能力，$\operatorname{HotspotOverlap}_m$ 提供直观的 hotspot identity 辅助解释。
-
-由此可以先作出轻量判断：
-
-- $n_{\max}^{\rm loc}$ 高、$E_{\rm replica}$ 小：需要对少数 Experts 做深 replication。
-- $n_{\max}^{\rm loc}$ 较低、$E_{\rm replica}$ 大：需要对较宽热点集合做浅 replication。
-- $\operatorname{LoadDrift}$ 高、$\operatorname{ReplicaOverlap}$ 高：精确负载变化快，但 replica demand 稳定，适合 historical placement + realtime reroute。
-- $\operatorname{ReplicaOverlap}$ 低：旧 replicas 对当前需求覆盖差，需要提高 placement freshness。
-- $\operatorname{LoadDrift}$ 与 $\operatorname{ReplicaOverlap}$ 都稳定：低频 historical placement 通常足够。
-
-这些指标刻画的是 workload 对 LB 性质的一阶要求，不负责构造具体 placement。尤其当 $K_{\rm replica}\approx0$、candidate layout residual 却仍然很大时，问题可能来自 remap、packing、重叠的 Rank 邻域、placement domain 或 Rank memory。此时再调用文末的 Global Layout Oracle 做精确验证。
+**先看负载有多偏、热点有多宽、变化有多快，再判断方案需要多深的 replication、多宽的覆盖范围和多高的更新频率；最后再看实际方案有没有做到，以及为此付出的系统成本是否值得。**
 
 ---
 
-## 负载均衡方案评价
+### 观察负载分布的特征
 
-前一章已经用 workload statistics 判断了方案需要的空间能力和时间能力。本章转向实际 candidate：先用 fixed-layout oracle 判断损失来自 layout 还是 rerouter，再检查 candidate 是否具备 workload 所需的 replication 与 freshness，最后判断 balance 收益能否覆盖系统成本。
+空间上主要看：
 
-### 第一步：定位 Candidate 的 Balance 缺口
+* $\operatorname{PeakSkew}$、$\operatorname{TopShare}_m$：负载有多集中。
+* $n_{\max}^{\rm loc}$：最热 Expert 至少需要多深的 replication。
+* $E_{\rm replica}$：有多少 Expert 需要额外 replica。
+* $K_{\rm replica}$：由单 Expert overload 导致的一阶总 replication pressure。
 
-设候选方案 $s$ 在 step $t$ 实际产生 placement $G_t^s$、reroute $y_t^s$ 和不均衡度 $\rho_s(t)$。不受 layout 限制、允许每个 Expert 到达所有 ranks 的理想下界记作 $\rho_{\rm ideal}(t)$。连续分流时它为 1；整数 token 分流时：
+据此得出一阶判断：
+
+* $n_{\max}^{\rm loc}$ 高、$E_{\rm replica}$ 小：负载集中在少数超级热点，适合对少数 Experts 做**深 replication**。
+* $n_{\max}^{\rm loc}$ 较低、$E_{\rm replica}$ 大：热点比较分散，需要对更宽的 Expert 集合做**浅 replication**。
+* $K_{\rm replica}$ 较大：Candidate 必须提供足够的 replica budget；预算明显低于这个 pressure 时，不可能达到目标 balance。
+* $K_{\rm replica}=0$ 并不表示当前 placement 已经合适。即使没有单个 Expert overload，重新组合基础 Expert 的 rank 归属仍可能改善 balance。
+
+时间上主要看：
+
+* $\operatorname{LoadDrift}(\Delta)$：隔了 $\Delta$ 时间后，精确负载变化了多少。
+* $\operatorname{HotspotOverlap}_m(\Delta)$：过去和现在的 Top-$m$ 热点 Expert 是否还是同一批。
+* $\operatorname{ReplicaOverlap}(\Delta;\rho)$：旧 placement 准备的 replicas 对当前 replica demand 还覆盖多少。
+
+其中真正和 placement freshness 直接相关的是 $\operatorname{ReplicaOverlap}$。
+
+因此：
+
+* $\operatorname{LoadDrift}$ 高、$\operatorname{ReplicaOverlap}$ 高：精确 token 比例变化很快，但需要额外容量的 Expert 基本没变。此时比较适合 **historical placement + realtime reroute**。
+* $\operatorname{ReplicaOverlap}$ 低：过去准备的 replicas 已经放错地方，需要提高 placement freshness。
+* $\operatorname{LoadDrift}$ 和 $\operatorname{ReplicaOverlap}$ 都稳定：频繁重算 placement 通常没有足够的 workload-side 必要性。
+
+这里的 realtime placement 始终指：
+
+> **当前 step 使用当前负载重新计算当前 step 的 layout。**
+
+它不要求热点未来继续存在。
+
+这些轻量指标只描述 workload 对方案性质的一阶要求，并不负责构造具体 placement。它们告诉我们需要多少 replication、覆盖多宽、多久更新一次，但不处理 Expert 到 Rank 的具体组合。
+
+---
+
+### 用 Fixed-layout Oracle 定位 Candidate 的 Balance 缺口
+
+确定 workload 大致需要什么能力以后，再看实际 Candidate。
+
+设方案 $s$ 在 step $t$ 实际产生：
+
+* placement $G_t^s$；
+* reroute $y_t^s$；
+* 最终不均衡度 $\rho_s(t)$。
+
+如果完全不限制 layout，允许任意 Expert 在所有 ranks 上执行，那么得到理想 balance 下界 $\rho_{\rm ideal}(t)$。
+
+连续分流时它为 1。
+
+如果 token 必须整数分配，则理论上即使完美均衡，也可能无法把 token 完全平均分给 $R$ 个 ranks。此时：
 
 $$
 \rho_{\rm ideal}(t)
@@ -341,7 +374,19 @@ $$
 \frac{\lceil N_t/R\rceil}{N_t/R}.
 $$
 
-在 candidate 实际产生的 layout 上运行 exact reroute oracle，就可以把总差距严格拆成：
+自然语言来说，就是：**总 token 数不能被 rank 数整除时，最忙 rank 至少要比平均值多承担不到一个 token，因此理想 imbalance 可能略高于 1。**
+
+接下来固定 Candidate 自己产生的 layout $G_t^s$，只把 rerouter 换成 exact oracle。
+
+记这个 layout 上能够达到的最好不均衡度为：
+
+$$
+\rho^*(x_t,G_t^s).
+$$
+
+自然语言来说，就是：**保持 Candidate 的 Expert placement 完全不动，只问如果 token 分流做到最优，这个 layout 最多能均衡到什么程度。**
+
+这样 Candidate 相对于理想状态的总损失可以严格拆成两部分：
 
 $$
 \rho_s(t)-\rho_{\rm ideal}(t)
@@ -355,53 +400,110 @@ $$
 }_{\text{reroute gap}}.
 $$
 
-- **layout residual**：candidate 的 layout 即使使用最优 reroute 仍然无法消除的部分。
-- **reroute gap**：这套 layout 本来能够做到，但 candidate 的实际 rerouter 没有做到的部分。
+自然语言来说：
 
-因此两项的含义不同：layout residual 大，应检查 placement 使用的资源和 freshness；layout residual 小而 reroute gap 大，才说明主要问题在实际分流。连续 token 和整数 token 是两套不同的评价模型，$\rho_{\rm ideal}$、$\rho^*$ 与 candidate result 必须始终使用同一套模型。
+* **layout residual**：这个 placement 本身留下了多少无法通过 reroute 补救的 imbalance。
+* **reroute gap**：placement 本来允许做到更好，但实际 rerouter 没有充分利用这些自由度。
 
-这项诊断只有在 replay 因果时才有意义：
+两者对应不同的问题：
 
-- historical placement 只能使用决策时已经观察到的负载，并施加真实的统计、planning、更新和生效延迟；
-- realtime placement 每一步使用当前负载产生当前 $G_t^s$，并让它服务当前 step；
-- 附录中的 clairvoyant Global Layout Oracle 只能作为可选验证边界，与实际 candidate 分栏报告，不能冒充 historical policy 的结果。
+* layout residual 大：优先检查 placement 的 replica budget、覆盖范围、freshness 和 rank 组合。
+* layout residual 小、reroute gap 大：主要问题才在实际分流算法。
 
-### 第二步：Layout 分析
+连续 token 和整数 token 是两套不同的评价模型。$\rho_{\rm ideal}$、$\rho^*$ 和 Candidate 的实际结果必须始终使用同一套模型，否则 decomposition 没有可比性。
 
-Gap decomposition 告诉我们 candidate 哪里损失了 balance；轻量 workload metrics 则判断 candidate 是否具有正确的方案性质。
+---
 
-**先判断空间能力。** 对照 $n_{\max}^{\rm loc}$、$E_{\rm replica}$、$K_{\rm replica}$ 和 $\operatorname{TopShare}_m$：
+### 用负载指标解释 Layout Residual
 
-- $n_{\max}^{\rm loc}$ 高而 $E_{\rm replica}$ 小，candidate 应把较深的 replication 集中在少数超级热点上。
-- $n_{\max}^{\rm loc}$ 较低而 $E_{\rm replica}$ 大，candidate 应覆盖更宽的热点集合，而不是把 replicas 继续堆给单个 Expert。
-- $K_{\rm replica}$ 给出由单 Expert overload 导致的一阶总 pressure。Candidate 的 replica budget 明显低于它时，不可能达到目标 $\rho$。
-- $K_{\rm replica}=0$ 不表示 current layout 已经合适；remap 仍可能改善基础实例的组合。
+Fixed-layout oracle 告诉我们“layout 有问题”，但还没有告诉我们为什么有问题。
 
-**再判断时间能力。** 对照 candidate 的真实 layout age 观察 $\operatorname{LoadDrift}(\Delta)$ 和 $\operatorname{ReplicaOverlap}(\Delta;\rho)$：
+这时再回到前面的 workload metrics。
 
-- $\operatorname{LoadDrift}$ 高而 $\operatorname{ReplicaOverlap}$ 高：candidate 应保留较稳定的 historical placement，同时用当前负载 realtime reroute。
-- $\operatorname{ReplicaOverlap}$ 低：历史 replicas 已无法覆盖当前 demand，需要提高 placement freshness。
-- $\operatorname{LoadDrift}$ 与 $\operatorname{ReplicaOverlap}$ 都稳定：频繁 placement 通常没有足够的 workload-side 必要性。
+**先检查空间能力。**
 
-Realtime placement 在这里始终表示：**每个 step 使用当前负载重新计算当前-step layout。** 这个判断不依赖热点未来是否持续。
+对照 $n_{\max}^{\rm loc}$、$E_{\rm replica}$、$K_{\rm replica}$ 和 $\operatorname{TopShare}_m$：
 
-最后比较简单指标与 fixed-layout residual。如果 candidate 已满足 $K_{\rm replica}$ 所示的 replication 深度和宽度，layout residual 仍然很大，说明一阶 pressure 没有捕获 remap、packing、重叠邻域、placement domain 或 Rank memory 问题；此时才调用附录中的 Global Layout Oracle 精确定位，而不是让所有 workload 默认进入 MILP 流程。
+* 少数 Expert 极热：Candidate 是否把足够多 replicas 集中给这些 Expert？
+* 热点较宽：Candidate 是否覆盖了足够多 Expert，而不是继续给少数 Expert 堆 replica？
+* $K_{\rm replica}$ 较高：Candidate 的 replica budget 是否至少达到这一阶需求？
 
-### 第三步：判断 Balance 收益是否值得系统成本
+如果明显没有满足这些条件，layout residual 的来源通常很好解释。
 
-> 实践中，不同负载均衡方案的实现方式差异很大，planning、weight movement、communication 何时做、如何做、和什么重叠等问题各有不同。用一个统一的框架量化所有方案的端到端总收益并不现实。因此本节只给出一个收益-成本的分析思路，具体量化分析需要结合方案的实际实现细节。
+**再检查时间能力。**
 
-前两步回答 candidate 改善了什么，以及 workload 是否真的需要这种能力。最后一步才把 balance 收益转换为端到端收益。
+真正应该比较的是 Candidate 的实际 **layout age**。
 
-假设当前 step 在完美均衡时的 Expert compute 时间为 $C$，原始 imbalance 为 $\rho_0$，candidate 降低到 $\rho_1$，则：
+如果一个 placement 从统计负载到真正生效相隔 $\Delta$ 个 step，就应该观察：
+
+* $\operatorname{LoadDrift}(\Delta)$；
+* $\operatorname{ReplicaOverlap}(\Delta;\rho)$。
+
+这样才能判断 stale placement 到底损失了什么：
+
+* $\operatorname{LoadDrift}$ 高但 $\operatorname{ReplicaOverlap}$ 高：旧 layout 仍准备了正确的容量，只需要当前 reroute 去适应精确流量变化。
+* $\operatorname{ReplicaOverlap}$ 低：旧 layout 连“容量应该放在哪些 Expert”都已经判断错了，提高 placement freshness 才有意义。
+
+这里必须保证 replay 因果正确：
+
+* historical placement 只能使用当时已经观察到的信息，并施加真实的统计、planning、更新和生效延迟；
+* realtime placement 可以使用当前 step 的负载产生当前 $G_t^s$；
+* clairvoyant Global Layout Oracle 可以看未来，但只能作为理论边界单独报告，不能冒充 historical policy 的结果。
+
+---
+
+### 什么时候需要 Global Layout Oracle
+
+轻量指标主要描述单 Expert overload 和热点覆盖问题，但实际 placement 还有组合效应。
+
+例如：
+
+* 多个热点 Expert 的 replicas 落到了同一批 ranks；
+* 基础 Expert 的 remap 不合理；
+* placement domain 限制了可访问 ranks；
+* Rank memory capacity 限制了 replica 选择；
+* Expert packing 导致局部容量冲突。
+
+因此即使：
 
 $$
-T_0^{\rm expert}\approx\rho_0C,
+K_{\rm replica}\approx 0,
+$$
+
+自然语言来说，就是：**从单 Expert overload 看，似乎没有明显需要新增 replica 的压力。**
+
+Candidate 的 layout residual 仍然可能很大。
+
+同样，如果 Candidate 已经提供了 $K_{\rm replica}$ 所要求的 replication 深度和宽度，但 fixed-layout residual 依然很高，也说明问题已经超出这些一阶指标的解释能力。
+
+此时才有必要调用 Global Layout Oracle：
+
+* 如果 Global Layout Oracle 能明显降低 residual，说明问题确实来自 placement 的组合方式。
+* 如果 Global Layout Oracle 也改善有限，则说明当前资源约束下本来就没有多少可利用的 balance 空间。
+
+这样可以避免让所有 workload 默认进入复杂的 MILP / global optimization 流程。
+
+---
+
+### Balance 改善是否值得系统成本
+
+前面的分析只回答“balance 能改善多少”。真正决定方案值不值得使用的，是端到端时间。
+
+假设当前 step 在完美均衡时 Expert compute 需要时间 $C$。
+
+原始不均衡度为 $\rho_0$，Candidate 降低到 $\rho_1$。
+
+那么 Expert compute 时间大致是：
+
+$$
+T_0^{\rm expert}\approx\rho_0 C,
 \qquad
-T_1^{\rm expert}\approx\rho_1C,
+T_1^{\rm expert}\approx\rho_1 C.
 $$
 
-仅考虑 Expert compute 时，理想 speedup 为：
+自然语言来说，就是：**最忙 Rank 比平均负载高多少，Expert 阶段的完成时间就大致被拉长多少。**
+
+如果只考虑 Expert compute，Candidate 的理想 speedup 是：
 
 $$
 \text{Speedup}_{\rm expert}
@@ -409,7 +511,16 @@ $$
 \frac{\rho_0}{\rho_1}.
 $$
 
-但 placement / reroute 同时会改变通信、planning、weight movement 和 kernel efficiency。定义 candidate 的净关键路径收益：
+自然语言来说，例如 imbalance 从 $1.5$ 降到 $1.1$，Expert compute 部分最多大约可以获得 $1.5/1.1$ 倍加速。
+
+但真实系统中，负载均衡还会改变：
+
+* 通信量和通信拓扑；
+* placement / reroute planning 开销；
+* Expert weight preparation / movement；
+* 单个 Expert GEMM 的 batch size 和 kernel efficiency。
+
+因此更有意义的是 Candidate 带来的净关键路径收益：
 
 $$
 \Delta T_{\rm net}
@@ -421,20 +532,52 @@ $$
 -\Delta T_{\rm kernel}.
 $$
 
+自然语言来说，就是：**减少 imbalance 省下来的 Expert compute 时间，扣掉新增通信、真正暴露在关键路径上的 planning 和 weight movement，以及因为 token 被切得更碎导致的 kernel 性能损失。**
+
 其中：
 
-- $\Delta T_{\rm comm}$ 是 reroute 引起的通信时间变化，可以为正或负。
-- $H_{\rm plan}^{\rm exposed}$ 是 placement / reroute planning 真正暴露在关键路径上的部分。
-- $H_{\rm move}^{\rm exposed}$ 是 weight preparation / movement 暴露在关键路径上的部分。
-- $\Delta T_{\rm kernel}$ 是 token 被切到更多 replicas 后，小 batch 或 kernel fragmentation 引起的时间变化。
+* $\Delta T_{\rm comm}$：reroute 后通信时间的变化，可以为正，也可以为负。
+* $H_{\rm plan}^{\rm exposed}$：placement / reroute planning 中真正暴露在 critical path 上的部分。
+* $H_{\rm move}^{\rm exposed}$：weight preparation / movement 中真正暴露在 critical path 上的部分。
+* $\Delta T_{\rm kernel}$：更多 replicas 导致单个 GEMM 变小、kernel fragmentation 等产生的时间变化。
 
-Candidate 只有在 $\Delta T_{\rm net}>0$ 时才产生正的端到端收益。这里只计算 exposed cost：已经与其他阶段重叠的 duration 不能再次完整相加。
+只有：
 
-这也解释了不同方案的适用边界：training / prefill 的 $C$ 较大，更容易覆盖 LB 成本；decode 的 compute saving 较小，未必值得复杂 placement。Historical placement 可以把部分 movement 移出当前 critical path，但承担 stale-layout residual；realtime placement 没有历史滞后，却必须在当前 step 内支付 planning / movement 成本，因此需要带来足够大的即时 balance 改善。
+$$
+\Delta T_{\rm net}>0
+$$
 
-最终不应生成一个脱离资源约束的 candidate 总分，而应在达到目标 coverage 的方案中，选择 memory、movement、communication 与 E2E latency 的 Pareto 点。
+时，Candidate 才真正带来端到端性能收益。
+
+自然语言来说，就是：**balance 省下来的时间必须比为了 balance 新付出的时间更多。**
+
+这里只应该计算 **exposed cost**。已经和其他计算或通信重叠的 duration，不能再次完整计入关键路径。
 
 ---
+
+### 不同方案的适用边界
+
+这套分析也可以解释常见方案为什么适用于不同 workload。
+
+* **Training / Prefill**：Expert compute 的 $C$ 通常较大，减少 imbalance 能省下更多绝对时间，因此更容易覆盖 planning、通信和 movement 成本。
+* **Decode**：每一步 token 少，Expert compute saving 较小，复杂的实时 placement 未必值得。
+* **Historical placement + realtime reroute**：把较贵的 placement 和 weight movement 移出当前 critical path，但要承担 stale-layout residual。
+* **Realtime placement**：不承担历史滞后，但必须在当前 step 内支付 planning / weight preparation 成本，因此只有当 fresh layout 能显著降低 $\rho$ 时才值得。
+
+最终不应该把不同方案压成一个脱离资源约束的总分。
+
+更合理的选择方式是：
+
+> **先筛掉无法满足 workload 所需 replication depth、coverage 和 freshness 的方案，再在剩余方案中比较 memory、movement、communication 和 E2E latency，选择合适的 Pareto 点。**
+
+因此整个评价过程可以归纳为：
+
+* workload metrics 判断**需要什么能力**；
+* fixed-layout oracle 判断**Candidate 的损失来自 layout 还是 rerouter**；
+* workload metrics + layout age 解释**为什么这个 layout 好或不好**；
+* Global Layout Oracle 只在简单指标解释不了 residual 时做精确验证；
+* 最后用 critical-path cost 判断**这种 balance 改善到底值不值得**。
+
 
 ## 附录：精确 Global Layout Capability Oracle（Work In Progress）
 
