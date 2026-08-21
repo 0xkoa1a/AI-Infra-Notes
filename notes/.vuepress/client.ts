@@ -6,6 +6,7 @@ import CriticalPathTimeline from "./components/diagrams/CriticalPathTimeline.vue
 import MoonEPBalanceIterations from "./components/diagrams/MoonEPBalanceIterations.vue"
 import MoonEPWeightLayout from "./components/diagrams/MoonEPWeightLayout.vue"
 import MoonEPZeroCopyFlow from "./components/diagrams/MoonEPZeroCopyFlow.vue"
+import RankLoadDistribution from "./components/diagrams/RankLoadDistribution.vue"
 
 defineMermaidConfig({
   flowchart: {
@@ -52,5 +53,6 @@ export default defineClientConfig({
     app.component("MoonEPBalanceIterations", MoonEPBalanceIterations)
     app.component("MoonEPWeightLayout", MoonEPWeightLayout)
     app.component("MoonEPZeroCopyFlow", MoonEPZeroCopyFlow)
+    app.component("RankLoadDistribution", RankLoadDistribution)
   },
 })

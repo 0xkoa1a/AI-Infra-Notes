@@ -7,7 +7,7 @@
     <div class="ep-map__actions">
       <div class="ep-map__action ep-map__action--placement">
         <strong>布局 <span>placement</span></strong>
-        <p>容量在哪里？</p>
+        <p>物理专家如何摆放在 GPU 上？</p>
       </div>
 
       <div class="ep-map__feasible-domain" aria-label="布局划定分流可行域">
@@ -20,7 +20,7 @@
 
       <div class="ep-map__action ep-map__action--reroute">
         <strong>分流 <span>reroute</span></strong>
-        <p>流量往哪里走？</p>
+        <p>每个 Token 如何分配给物理专家？</p>
       </div>
     </div>
 
@@ -46,7 +46,7 @@
       </section>
 
       <section class="ep-map__paradigm ep-map__paradigm--realtime" aria-label="全实时布局加实时分流">
-        <div class="ep-map__paradigm-title">全实时布局 + 实时分流</div>
+        <div class="ep-map__paradigm-title">实时布局 + 分流</div>
         <div class="ep-map__realtime-flow">
           <div class="ep-map__realtime-step">
             <span>当前 Router 输出</span>
