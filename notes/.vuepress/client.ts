@@ -3,6 +3,10 @@ import { defineClientConfig } from "vuepress/client"
 
 import EPLoadBalancingMap from "./components/diagrams/EPLoadBalancingMap.vue"
 import CriticalPathTimeline from "./components/diagrams/CriticalPathTimeline.vue"
+import DeepEPBufferTransform from "./components/diagrams/DeepEPBufferTransform.vue"
+import DeepEPDedupExplorer from "./components/diagrams/DeepEPDedupExplorer.vue"
+import DeepEPHybridPipeline from "./components/diagrams/DeepEPHybridPipeline.vue"
+import DeepEPPathExplorer from "./components/diagrams/DeepEPPathExplorer.vue"
 import MoonEPBalanceIterations from "./components/diagrams/MoonEPBalanceIterations.vue"
 import MoonEPWeightLayout from "./components/diagrams/MoonEPWeightLayout.vue"
 import MoonEPZeroCopyFlow from "./components/diagrams/MoonEPZeroCopyFlow.vue"
@@ -49,6 +53,10 @@ defineMermaidConfig({
 export default defineClientConfig({
   enhance({ app }) {
     app.component("CriticalPathTimeline", CriticalPathTimeline)
+    app.component("DeepEPBufferTransform", DeepEPBufferTransform)
+    app.component("DeepEPDedupExplorer", DeepEPDedupExplorer)
+    app.component("DeepEPHybridPipeline", DeepEPHybridPipeline)
+    app.component("DeepEPPathExplorer", DeepEPPathExplorer)
     app.component("EPLoadBalancingMap", EPLoadBalancingMap)
     app.component("MoonEPBalanceIterations", MoonEPBalanceIterations)
     app.component("MoonEPWeightLayout", MoonEPWeightLayout)
