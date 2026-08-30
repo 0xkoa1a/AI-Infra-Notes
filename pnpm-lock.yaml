@@ -10,7 +10,7 @@ importers:
     devDependencies:
       '@mdit/plugin-katex-slim':
         specifier: 1.1.0
-        version: 1.1.0(katex@0.16.47)(markdown-it@15.0.1)
+        version: 1.1.0(katex@0.18.4)(markdown-it@15.0.1)
       '@playwright/test':
         specifier: 1.62.1
         version: 1.62.1
@@ -51,8 +51,8 @@ importers:
         specifier: 6.1.0
         version: 6.1.0
       katex:
-        specifier: 0.16.47
-        version: 0.16.47
+        specifier: 0.18.4
+        version: 0.18.4
       markdown-it:
         specifier: 15.0.1
         version: 15.0.1
@@ -1702,6 +1702,10 @@ packages:
     resolution: {integrity: sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg==}
     hasBin: true
 
+  katex@0.18.4:
+    resolution: {integrity: sha512-IMPntbRLOU+eu88XDiFKqQ8Akhr9Tv7jDMXqPhjG9SI1JMA4DIgXk4x9k4skJz2NZJXBRbC+2pYBLj9olqcZow==}
+    hasBin: true
+
   khroma@2.1.0:
     resolution: {integrity: sha512-Ls993zuzfayK269Svk9hzpeGUKob/sIgZzyHYdjQoAdQetRKpOLj+k/QQQ/6Qi0Yz65mlROrfd+Ev+1+7dz9Kw==}
 
@@ -2613,12 +2617,12 @@ snapshots:
       '@mdit/helper': 1.1.0(markdown-it@15.0.1)
       markdown-it: 15.0.1
 
-  '@mdit/plugin-katex-slim@1.1.0(katex@0.16.47)(markdown-it@15.0.1)':
+  '@mdit/plugin-katex-slim@1.1.0(katex@0.18.4)(markdown-it@15.0.1)':
     dependencies:
       '@mdit/helper': 1.1.0(markdown-it@15.0.1)
       '@mdit/plugin-tex': 1.1.0(markdown-it@15.0.1)
     optionalDependencies:
-      katex: 0.16.47
+      katex: 0.18.4
       markdown-it: 15.0.1
 
   '@mdit/plugin-plantuml@1.0.4(markdown-it@15.0.1)':
@@ -4145,6 +4149,10 @@ snapshots:
       graceful-fs: 4.2.11
 
   katex@0.16.47:
+    dependencies:
+      commander: 8.3.0
+
+  katex@0.18.4:
     dependencies:
       commander: 8.3.0
 
