@@ -1,4 +1,4 @@
-.PHONY: help check install render preview clean
+.PHONY: help check install render export preview test clean
 
 NODE           := node
 PNPM           := pnpm
@@ -13,6 +13,8 @@ help:
 	@echo "  make check    检查 Node、pnpm 与 VuePress 环境"
 	@echo "  make install  安装锁定版本的前端依赖"
 	@echo "  make render   完整构建静态站点到 _site/"
+	@echo "  make export PAGE=path/to/note.md   导出自包含单页 HTML"
+	@echo "  make test     运行类型、单元与导出回归测试"
 	@echo "  make preview  启动本地增量预览"
 	@echo "  make clean    清理站点输出与 VuePress 缓存"
 	@echo ""
@@ -24,7 +26,7 @@ check:
 	@$(NODE) --version | sed 's/^/node /'
 	@$(PNPM) --version | sed 's/^/pnpm /'
 	@test -x "$(CURDIR)/node_modules/.bin/vuepress" || { echo "依赖未安装，请先运行 make install"; exit 1; }
-	@$(NODE) scripts/check-headings.mjs
+	@$(PNPM) run check:content
 
 install:
 	$(PNPM) install --frozen-lockfile
@@ -37,8 +39,18 @@ render: check
 	@echo ""
 	@echo "已生成 _site/index.html"
 
+export: check
+	@test -n "$(PAGE)" || { echo "请指定 PAGE，例如 make export PAGE=parallel/DeepEP.md"; exit 1; }
+	$(PNPM) run export:page -- --page "$(PAGE)" $(if $(filter 1,$(ALLOW_EXTERNAL)),--allow-external,)
+
 preview: check
 	$(PNPM) run docs:dev
+
+test: check
+	$(PNPM) run typecheck
+	$(PNPM) test
+	$(PNPM) run docs:build
+	$(PNPM) run export:smoke
 
 clean:
 	@test "$(SITE_OUTPUT)" = "$(CURDIR)/_site"

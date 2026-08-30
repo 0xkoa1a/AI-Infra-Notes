@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "paths": {
+      "@theme/VPHome.vue": ["types/vue-component.d.ts"],
+      "@theme/VPPage.vue": ["types/vue-component.d.ts"],
+      "@theme/useData": [
+        "node_modules/@vuepress/theme-default/dist/client/composables/useData.d.ts"
+      ],
+      "@vuepress/theme-default/components/VPPageMeta.vue": [
+        "types/vue-component.d.ts"
+      ],
+      "@vuepress/theme-default/components/VPPageNav.vue": [
+        "types/vue-component.d.ts"
+      ]
+    },
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["vite/client"]
+  },
+  "include": [
+    "notes/.vuepress/**/*.ts",
+    "notes/.vuepress/**/*.vue",
+    "types/**/*.d.ts"
+  ]
+}

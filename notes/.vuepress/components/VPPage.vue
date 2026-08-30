@@ -7,6 +7,8 @@ import VPPageNav from "@vuepress/theme-default/components/VPPageNav.vue"
 
 import ArticleToc from "./ArticleToc.vue"
 
+const isPortableExport = import.meta.env.VITE_PORTABLE_EXPORT === "1"
+
 defineSlots<{
   top?: Slot
   bottom?: Slot
@@ -18,14 +20,18 @@ defineSlots<{
 <template>
   <main class="vp-page">
     <slot name="top" />
-    <ArticleToc />
-    <div vp-content>
-      <slot name="content-top" />
-      <Content id="content" />
-      <slot name="content-bottom" />
+    <div class="vp-article-layout">
+      <div class="vp-article-main">
+        <div vp-content>
+          <slot name="content-top" />
+          <Content id="content" />
+          <slot name="content-bottom" />
+        </div>
+        <VPPageMeta v-if="!isPortableExport" />
+        <VPPageNav v-if="!isPortableExport" />
+      </div>
+      <ArticleToc />
     </div>
-    <VPPageMeta />
-    <VPPageNav />
     <slot name="bottom" />
   </main>
 </template>
@@ -56,30 +62,46 @@ defineSlots<{
     }
   }
 
+  .vp-article-main {
+    min-width: 0;
+  }
+
   @media (min-width: 1440px) {
-    --article-content-offset: max(
-      1rem,
-      calc((100% - var(--content-width) - 5rem - var(--article-toc-rail, 16rem)) / 2)
+    --article-column-width: calc(var(--content-width) + 5rem);
+    --article-layout-gutter: 1rem;
+    --article-toc-gap: 1rem;
+    --article-toc-width: 15rem;
+    --article-layout-width: calc(
+      var(--article-column-width) + var(--article-toc-gap) +
+        var(--article-toc-width)
     );
 
-    > [vp-content],
-    > .vp-page-meta,
-    > .vp-page-nav {
-      margin-inline-start: var(--article-content-offset);
-      margin-inline-end: 0;
+    .vp-article-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) var(--article-toc-width);
+      column-gap: var(--article-toc-gap);
+      align-items: start;
+      width: calc(100% - 2 * var(--article-layout-gutter));
+      max-width: var(--article-layout-width);
+      margin-inline: auto;
     }
 
-    > .vp-page-nav {
+    .vp-article-main > [vp-content],
+    .vp-article-main > .vp-page-meta,
+    .vp-article-main > .vp-page-nav {
+      box-sizing: border-box;
+      width: 100%;
+      max-width: none;
+      margin-inline: 0;
+    }
+
+    .vp-article-main > .vp-page-nav {
       padding-inline: 2.5rem;
     }
   }
 
-  // On very wide screens, keep the article as the visual anchor instead of
-  // centering the combined article + outline group in the remaining space.
   @media (min-width: 1920px) {
-    --sidebar-width: 360px;
     --content-width: 827px;
-    --article-content-offset: 123px;
     --article-toc-gap: 80px;
     --article-toc-width: 220px;
   }

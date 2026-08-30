@@ -1,7 +1,11 @@
-import fs from "node:fs";
 import path from "node:path";
 
-import type { SidebarConfig, SidebarGroup } from "vuepress";
+import type {
+  SidebarGroupOptions,
+  SidebarOptions,
+} from "@vuepress/theme-default";
+
+import { listNoteFiles, readNoteFile } from "../lib/content.js";
 
 type PageMeta = {
   title: string;
@@ -25,37 +29,29 @@ const SECTIONS: Section[] = [
   { directory: "MoE-Overlap", text: "MoE Overlap" },
 ];
 
-function unquote(value: string): string {
-  return value.replace(/^(["'])(.*)\1$/, "$2");
-}
-
 function readPage(sourceDir: string, relativePath: string): PageMeta {
-  const content = fs.readFileSync(path.join(sourceDir, relativePath), "utf8");
-  const frontmatter = content.match(/^---\s*\n([\s\S]*?)\n---/u)?.[1] ?? "";
-  const title = frontmatter.match(/^title:\s*(.+)$/mu)?.[1]?.trim();
-  const order = frontmatter.match(/^order:\s*(\d+)$/mu)?.[1];
+  const note = readNoteFile(sourceDir, relativePath);
 
   return {
-    title: title ? unquote(title) : path.basename(relativePath, ".md"),
-    order: order ? Number.parseInt(order, 10) : Number.MAX_SAFE_INTEGER,
+    title: note.title ?? path.basename(relativePath, ".md"),
+    order: note.order,
     link: `/${relativePath.replace(/\.md$/u, ".html")}`,
   };
 }
 
-function listSection(sourceDir: string, section: Section): SidebarGroup {
-  const pages = fs
-    .readdirSync(path.join(sourceDir, section.directory), { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => readPage(sourceDir, `${section.directory}/${entry.name}`))
+function listSection(sourceDir: string, section: Section): SidebarGroupOptions {
+  const sectionPages = listNoteFiles(sourceDir)
+    .filter((relativePath) => path.posix.dirname(relativePath) === section.directory)
+    .map((relativePath) => readPage(sourceDir, relativePath))
     .sort((left, right) => left.order - right.order || left.title.localeCompare(right.title, "zh-CN"));
 
   return {
     text: section.text,
     collapsible: true,
-    children: pages.map((page) => ({ text: page.title, link: page.link })),
+    children: sectionPages.map((page) => ({ text: page.title, link: page.link })),
   };
 }
 
-export function createSidebar(sourceDir: string): SidebarConfig {
+export function createSidebar(sourceDir: string): SidebarOptions {
   return SECTIONS.map((section) => listSection(sourceDir, section));
 }

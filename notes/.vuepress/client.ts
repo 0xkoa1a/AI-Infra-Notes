@@ -1,6 +1,8 @@
 import { defineMermaidConfig } from "@vuepress/plugin-markdown-chart/client"
 import { defineClientConfig } from "vuepress/client"
 
+import "katex/dist/katex.min.css"
+
 import EPLoadBalancingMap from "./components/diagrams/EPLoadBalancingMap.vue"
 import CriticalPathTimeline from "./components/diagrams/CriticalPathTimeline.vue"
 import DeepEPBufferTransform from "./components/diagrams/DeepEPBufferTransform.vue"

@@ -1,7 +1,11 @@
 {
   "extends": "./tsconfig.node.json",
   "include": [
+    "lib/**/*.ts",
     "vuepress.config.ts",
-    "plugins/**/*.ts"
+    "plugins/**/*.ts",
+    "playwright.config.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts"
   ]
 }

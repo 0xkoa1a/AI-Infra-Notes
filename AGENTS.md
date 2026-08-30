@@ -25,6 +25,7 @@
 
 ## Validation
 
-- Run `make check`, `pnpm run docs:build`, and `git diff --check` for site changes.
+- Run `make check`, `pnpm run typecheck`, `pnpm test`, `pnpm run docs:build`, and `git diff --check` for site changes.
+- When portable export code or shared page chrome changes, run `pnpm run export:smoke` and open a generated file through `file://`.
 - Inspect the rendered target page in the browser, including light and dark modes when semantic colors change.
 - After validation, run `make clean` so generated site output and VuePress caches are not left behind.

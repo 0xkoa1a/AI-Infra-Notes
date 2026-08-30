@@ -95,8 +95,8 @@ const renderHeaders = (items: PageHeader[]): ReturnType<typeof h> | null =>
 <template>
   <ClientOnly>
     <div v-if="headers.length" class="vp-toc-placeholder">
-      <aside id="toc" vp-toc aria-label="On this Page">
-        <div class="vp-toc-header">On this Page</div>
+      <aside id="toc" vp-toc aria-label="本页目录">
+        <div class="vp-toc-header">本页目录</div>
         <div ref="toc" class="vp-toc-wrapper">
           <component :is="renderHeaders(headers)" />
           <div class="vp-toc-marker" :style="{ top: tocMarkerTop }" />

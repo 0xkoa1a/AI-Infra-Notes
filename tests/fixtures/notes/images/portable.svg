@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 96" role="img" aria-labelledby="title">
+  <title id="title">Portable page fixture</title>
+  <rect width="240" height="96" rx="16" fill="#3b82f6"/>
+  <path d="M44 30h152M44 48h112M44 66h136" stroke="#fff" stroke-width="8" stroke-linecap="round"/>
+</svg>

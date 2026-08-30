@@ -5,6 +5,8 @@ flash-attention
 # VuePress 依赖、缓存与静态输出
 node_modules/
 _site/
+_exports/
+.vuepress-export-*/
 notes/.vuepress/.cache/
 notes/.vuepress/.temp/
 pnpm-debug.log*

@@ -1,0 +1,12 @@
+allowBuilds:
+  "@parcel/watcher": true
+  esbuild: true
+  vue-demi: true
+
+# The current VuePress rc line mixes immediately adjacent core and markdown-it
+# peer declarations. These exact versions are pinned and fully validated here.
+peerDependencyRules:
+  allowedVersions:
+    "@vuepress/bundler-vite": 2.0.0-rc.31
+    markdown-it: 15.0.1
+    vuepress: 2.0.0-rc.31
