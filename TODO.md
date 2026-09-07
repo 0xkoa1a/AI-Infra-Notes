@@ -12,3 +12,5 @@ Repo 技术栈：
 CUDA 中的流水线建模：不同 tile 调度方式会影响 L2 cache hit rate，进而影响数据搬运的带宽。考虑一下这部分的建模。
 
 TileSight
+
+可图：4 卡 4090 跑通 t2i i2i 两个模型 做 profiling 

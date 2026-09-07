@@ -4,6 +4,7 @@ import { defineClientConfig } from "vuepress/client"
 import "katex/dist/katex.min.css"
 
 import EPLoadBalancingMap from "./components/diagrams/EPLoadBalancingMap.vue"
+import FlashAttentionV4Diagram from "./components/diagrams/FlashAttentionV4Diagram.vue"
 import CriticalPathTimeline from "./components/diagrams/CriticalPathTimeline.vue"
 import DeepEPBufferTransform from "./components/diagrams/DeepEPBufferTransform.vue"
 import DeepEPDedupExplorer from "./components/diagrams/DeepEPDedupExplorer.vue"
@@ -60,6 +61,7 @@ export default defineClientConfig({
     app.component("DeepEPHybridPipeline", DeepEPHybridPipeline)
     app.component("DeepEPPathExplorer", DeepEPPathExplorer)
     app.component("EPLoadBalancingMap", EPLoadBalancingMap)
+    app.component("FlashAttentionV4Diagram", FlashAttentionV4Diagram)
     app.component("MoonEPBalanceIterations", MoonEPBalanceIterations)
     app.component("MoonEPWeightLayout", MoonEPWeightLayout)
     app.component("MoonEPZeroCopyFlow", MoonEPZeroCopyFlow)
