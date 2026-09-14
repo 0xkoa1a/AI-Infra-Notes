@@ -13,4 +13,11 @@ CUDA 中的流水线建模：不同 tile 调度方式会影响 L2 cache hit rate
 
 TileSight
 
-可图：4 卡 4090 跑通 t2i i2i 两个模型 做 profiling 
+可图：4 卡 4090 跑通 t2i i2i 两个模型 做 profiling
+- i2i 跟一下，然后是 t2i。
+
+可图日会 业务 一两个月 后续会有一些 专项
+
+存量 可图v3 小卡 成本打低
+
+存量 其他模型的优化

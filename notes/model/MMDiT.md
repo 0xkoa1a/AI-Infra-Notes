@@ -11,24 +11,7 @@ DiT（Diffusion Transformer）保留扩散模型的训练目标和迭代去噪�
 
 整体数据流为：
 
-```text
-image
-  │ VAE Encoder
-  ▼
-clean latent z0
-  │ scheduler 加噪
-  ▼
-noisy latent zt
-  │ Patchify + Position Embedding
-  ▼
-image tokens
-  │ 多层 DiT Block
-  ▼
-output tokens
-  │ Linear + Unpatchify
-  ▼
-噪声、velocity 或 flow 等去噪目标预测
-```
+<MMDiTDiagram view="overview" />
 
 ### Patchify
 
@@ -50,15 +33,7 @@ x = x.flatten(2).transpose(1, 2)  # [B, H' * W', D]
 
 例如，生成 $256\times256$ 图像时，VAE 经过 $8$ 倍下采样得到 `[B, 4, 32, 32]` 的 latent。使用 `2×2` Patch：
 
-```text
-[B, 4, 32, 32]
-    │ Conv2d(kernel=2, stride=2, out_channels=D)
-    ▼
-[B, D, 16, 16]
-    │ flatten spatial dimensions
-    ▼
-[B, 256, D]
-```
+<MMDiTDiagram view="patchify" />
 
 因此 DiT-XL/2 中的 `/2` 表示 Patch Size 为 2。Patch Size 越小，图像 token 越多，空间粒度更细，但 Attention 计算量也更大。
 
@@ -88,16 +63,7 @@ Diffusion Timestep 先经过 Sin-Cos Timestep Embedding 和 MLP。原始 Class-C
 
 DiT Block 使用 adaLN-Zero 将 `c` 转换为 Attention 和 MLP 两个分支各自的 Shift、Scale 与 Gate：
 
-```text
-condition c
-   │ MLP
-   ├─ Attention：shift、scale、gate
-   └─ MLP：      shift、scale、gate
-
-image tokens
-   ├─ adaLN → Self-Attention → Gate → Residual
-   └─ adaLN → MLP            → Gate → Residual
-```
+<MMDiTDiagram view="conditioning" />
 
 `c` 会沿 token 维广播，因此同一个样本中的全部图像 token 接受相同的全局调制。原始 DiT 没有文本 token 流；文本生成模型可以用 pooled text 调制 adaLN，或者增加图像查询文本的 Cross-Attention。
 
@@ -105,15 +71,7 @@ image tokens
 
 经过全部 DiT Blocks 后，Final Linear 将每个 `[D]` Token 投影为一个展平的输出 Patch。Unpatchify 再按照原来的 Patch Grid 将它们放回二维 latent：
 
-```text
-[B, H' * W', p_h * p_w * C_out]
-        │ reshape
-        ▼
-[B, H', W', p_h, p_w, C_out]
-        │ permute + merge patch grid
-        ▼
-[B, C_out, H' * p_h, W' * p_w]
-```
+<MMDiTDiagram view="unpatchify" />
 
 输出重新具有 latent 的二维布局。它可能预测噪声、Velocity、Flow，或同时预测扩散目标和方差；Scheduler 再据此将 `z_t` 更新为 `z_{t-1}`。
 
@@ -276,24 +234,7 @@ $$
 
 典型 Block 可以概括为：
 
-```text
-image hidden ── Adaptive Norm / Gate ── image QKV ─┐
-                                                   ├─ concat QKV
-text hidden  ── Adaptive Norm / Gate ── text QKV  ─┘
-                                                           │
-                                                           ▼
-                                                    Joint Attention
-                                                           │
-                                      ┌──── split output ──┴─────┐
-                                      ▼                           ▼
-                              image output proj             text output proj
-                                      │                           │
-                              image residual                 text residual
-                                      │                           │
-                               image Norm + MLP              text Norm + MLP
-                                      │                           │
-                              next image hidden              next text hidden
-```
+<MMDiTDiagram view="block" />
 
 写成简化伪代码：
 

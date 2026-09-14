@@ -10,6 +10,7 @@ import DeepEPBufferTransform from "./components/diagrams/DeepEPBufferTransform.v
 import DeepEPDedupExplorer from "./components/diagrams/DeepEPDedupExplorer.vue"
 import DeepEPHybridPipeline from "./components/diagrams/DeepEPHybridPipeline.vue"
 import DeepEPPathExplorer from "./components/diagrams/DeepEPPathExplorer.vue"
+import MMDiTDiagram from "./components/diagrams/MMDiTDiagram.vue"
 import MoonEPBalanceIterations from "./components/diagrams/MoonEPBalanceIterations.vue"
 import MoonEPWeightLayout from "./components/diagrams/MoonEPWeightLayout.vue"
 import MoonEPZeroCopyFlow from "./components/diagrams/MoonEPZeroCopyFlow.vue"
@@ -62,6 +63,7 @@ export default defineClientConfig({
     app.component("DeepEPPathExplorer", DeepEPPathExplorer)
     app.component("EPLoadBalancingMap", EPLoadBalancingMap)
     app.component("FlashAttentionV4Diagram", FlashAttentionV4Diagram)
+    app.component("MMDiTDiagram", MMDiTDiagram)
     app.component("MoonEPBalanceIterations", MoonEPBalanceIterations)
     app.component("MoonEPWeightLayout", MoonEPWeightLayout)
     app.component("MoonEPZeroCopyFlow", MoonEPZeroCopyFlow)
