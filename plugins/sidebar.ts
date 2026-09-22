@@ -23,6 +23,7 @@ const SECTIONS: Section[] = [
   { directory: "EP-load-balancing", text: "EP Load Balancing" },
   { directory: "misc", text: "Misc" },
   { directory: "cuda", text: "CUDA" },
+  { directory: "compiler", text: "算子编译" },
   { directory: "model", text: "Model" },
   { directory: "parallel", text: "Parallel" },
   { directory: "flash-attn", text: "FlashAttention" },

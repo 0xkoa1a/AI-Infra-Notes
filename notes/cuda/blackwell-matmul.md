@@ -5,791 +5,530 @@ order: 1
 
 # Blackwell 架构 MatMul 算子实现精读
 
-算子实现来自 https://github.com/KnowingNothing/MatmulTutorial/tree/main/examples/matmul/this-sm100
+这份 Level 9 实现把 GEMM 拆成三条长期运行的工作流：TMA warp 加载输入，MMA warp 发射矩阵计算，epilogue warps 写回结果。**读懂它的关键，是弄清每份数据由谁持有、何时完成，以及何时允许下一轮覆盖同一块存储。**
 
-这里节选 level 9 实现，其可达到 98% 的 DeepGEMM 性能。
+本文精读 [MatmulTutorial 的 Level 9 源码](https://github.com/KnowingNothing/MatmulTutorial/blob/69c6886b93c3d569f1ba49185615c7fce9f19df0/examples/matmul/this-sm100/level9/matmul.cu)，固定 commit 为 `69c6886b93c3d569f1ba49185615c7fce9f19df0`。下面的 C++ 片段保留实现中的控制关系，调整了断行并补充中文注释；未展开的指针设置和 helper 可对照原文件与文末附录。性能数字来自同版本作者报告，未在本文中复测。
 
-## 1. 先建立整体图景
+## 先建立数据与执行图景
 
-### 1.1 计算任务与 tile
+### 计算任务与两个 CTA 的分工
 
-算子计算：
+算子把两份 BF16 输入相乘，以 FP32 累加，最后写出 BF16 结果：
 
-```text
-D[M, N] = A[M, K] @ B[N, K]^T
+$$
+D=AB^{\mathsf T}.
+$$
 
-A、B：BF16
-TMEM 累加器：FP32
-D：BF16
-```
+- $M$：输出行数；$N$：输出列数；$K$：相乘求和的维度。
+- $A$：行主序的 $[M,K]$ 矩阵，元素为 BF16。
+- $B$：行主序的 $[N,K]$ 矩阵，计算时逻辑转置。
+- $D$：行主序的 $[M,N]$ 输出，元素为 BF16。
 
-Level 9 使用固定的主 tile：
+**CTA** 是 CUDA 线程块。此实现把两个 CTA 组成一个 cluster，协作执行 `cta_group::2` UMMA；UMMA 是这里使用的 Blackwell 异步 Tensor Core 矩阵乘加指令。两个 CTA 分别负责不同的输出行，共同使用同一段输出列对应的 B 数据。
 
-| 层级 | 形状/数量 | 含义 |
-|---|---:|---|
-| 每个 CTA 的输出 tile | `256 × 256` | 一个 CTA 最终写回一块 D |
-| 每个 K block | `64` | 主循环每轮消费 64 个 K 元素 |
-| 每条 UMMA 的 K | `16` | 一个 K block 需要 4 个 K-step |
-| M-wave | `2 × 128` 行 | 每个 CTA 的 256 行分两次进入本地 TMEM |
-| CTA cluster | `2` 个 CTA | 两个 SM 协作执行 `cta_group::2` UMMA |
-
-同一 cluster 中的两个 CTA 被 scheduler 分配到相同的 `n_block`、不同的 `m_block`：
-
-```text
-CTA 0 / SM 0                           CTA 1 / SM 1
-
-A tile 0: [256, 64]                    A tile 1: [256, 64]
-B 左半:   [128, 64]                    B 右半:   [128, 64]
-          \                               /
-           \------ cta_group::2 UMMA ----/
-                          │
-             两边共同提供完整的 256 列 B
-                          │
-CTA 0 TMEM: tile 0 的结果                CTA 1 TMEM: tile 1 的结果
-```
-
-两个 CTA 共享一条 2SM UMMA 的发射过程和 B 的两个半块，但各自使用本地 A，并在本地 TMEM 中得到不同的输出 tile。
-
-Blackwell 2CTA UMMA 的物理接口是“沿 TMEM lane，也就是 M 方向扩展”。因此 A 跟随本地输出行成为私有数据，B 则成为两个 CTA 共享的数据。这个不对称是硬件数据通路选择，不是 GEMM 算法本身的要求。
-
-### 1.2 数据经过哪些存储层级
-
-```text
-Global A/B
-    │
-    │ TMA Load：异步搬运
-    ▼
-SMEM A/B（4 个流水线 stage）
-    │
-    │ UMMA：读取 SMEM descriptor，执行 BF16 × BF16 → FP32
-    ▼
-TMEM（Tensor Core 累加器）
-    │
-    │ tcgen05.ld：128 个 epilogue 线程各读一条 TMEM lane
-    ▼
-寄存器 FP32 → 打包为 BF16 → swizzled SMEM CD（2 个 store stage）
-    │
-    │ TMA Store
-    ▼
-Global D
-```
-
-不要把三个 descriptor 混在一起：
-
-| 对象 | 描述什么 | 谁消费 |
+| 层级 | 尺寸 | 在代码中的作用 |
 |---|---|---|
-| `CUtensorMap tma_a/tma_b/tma_d` | Global tensor 的基址、shape、stride、TMA box、swizzle、OOB 等 | TMA load/store |
-| `desc_a/desc_b` | 当前 A/B tile 在 SMEM 中的起始位置和 UMMA layout | UMMA |
-| `idesc` | A/B/C 数据格式和本条 UMMA 的 M、N 等指令属性 | UMMA |
+| 每 CTA 的输出 tile | $256\times256$ | `BLOCK_M × BLOCK_N` |
+| 两 CTA 合计输出 | 两块 $256\times256$ | 相同 N 区间，不同 M 区间 |
+| 每轮 K block | 64 个 K 元素 | 每个 CTA 加载 A $[256,64]$、B $[128,64]$ |
+| 每次 UMMA 的 K-step | 16 个 K 元素 | 一个 K block 分 4 次推进 K |
+| 每个 CTA 的 M-wave | 128 行 | 两个 wave 覆盖本 CTA 的 256 行 |
 
-### 1.3 三角色 warp specialization
+<BlackwellGemmDiagram view="cluster" />
 
-每个 CTA 有 8 个 warp，共 256 个线程：
+每次 UMMA 由 leader CTA 发射，两边各产生 128 行本地结果，所以指令的逻辑 `UMMA_M=256`。每个 CTA 自己的输出仍有 256 行，需要再做两个 M-wave。这里的“2”分别指 cluster 中的 CTA 数与本地输出的 wave 数。
+
+> 下文先按两个 CTA 能配对到相同 N 区间的情况阅读；scheduler 小节会推导这一前提。B 的原始布局是 `[N,K]`，图中 B 的前后两半沿 N 行划分，对应 D 的前后两组列。
+
+### 存储路径与 TMEM 映射
+
+TMA 将全局输入搬到各 CTA 的共享内存（SMEM），UMMA 读取它们并把累加结果放进 Tensor Memory（TMEM）。结果随后经过线程寄存器和 CD SMEM，由 TMA 写回 D。`CD` 是代码对输出暂存区的命名。
+
+<BlackwellGemmDiagram view="storage" />
+
+此实现每个 CTA 分配完整的 `128 lanes × 512 columns` TMEM，每个单元存一个 32-bit 累加值。逻辑输出有 256 行，必须明确它与物理 lane 的对应关系：
+
+<BlackwellGemmDiagram view="tmem" />
+
+| M-wave | 本 CTA 的逻辑输出行 | TMEM lane | TMEM column |
+|---|---|---|---|
+| `w=0` | `[0,128)` | `[0,128)` | `[0,256)` |
+| `w=1` | `[128,256)` | `[0,128)` | `[256,512)` |
+
+两组结果同时保存在 TMEM 中。Epilogue 中 `local_tid` 标识本 CTA 的 128 个读取线程，每个线程处理一条 lane；`w * 128` 将这条 lane 还原到对应输出行。MMA 代码里的 `w * BLOCK_N` 则选择该 wave 使用的 TMEM column 区间。
+
+### 角色、缓冲与完成通知
+
+每个 CTA 有 8 个 warp，共 256 个线程。Warp 是 GPU 的 32 线程执行组；这里通过不同分支分配职责，即 warp specialization。
 
 | Warp | 角色 | 参与 CTA | 工作 |
 |---|---|---|---|
-| 0 | TMA producer | 两个 CTA | 各选 1 个线程持续加载 A/B |
-| 1 | MMA consumer/producer | 仅 leader CTA | 全 warp 等 barrier/shuffle，选 1 个线程发 UMMA 和 commit |
-| 2 | TMEM 管理 | 两个 CTA | 集体分配/释放 TMEM |
-| 3 | 空闲 | 两个 CTA | 不参与主流水线 |
-| 4–7 | Epilogue consumer | 两个 CTA | 128 线程把本地 TMEM 写回各自的 D tile |
+| 0 | TMA producer | 两个 CTA | 各选 1 个线程加载本地 A/B |
+| 1 | MMA consumer/producer | leader CTA | 全 warp 等待、shuffle；选 1 个线程发 UMMA 和 commit |
+| 2 | TMEM 管理 | 两个 CTA | 整个 warp 协作分配、释放 TMEM |
+| 3 | 无主流水线工作 | 两个 CTA | 参与末尾集合 |
+| 4–7 | Epilogue consumer | 两个 CTA | 128 线程读取本地 TMEM，写回各自的 D tile |
 
-三个角色分别运行自己的 persistent loop：
+TMA 与 MMA 按 **K block** 交接输入，MMA 与 epilogue 按**完整输出 tile** 交接累加结果。写回时，一个 tile 再分成 8 个 $[128,64]$ chunk。三者使用的缓冲粒度不同：
 
-```text
-时间 ─────────────────────────────────────────────────────────────►
-
-TMA warp:       load tile 0     load tile 1     load tile 2 ...
-                       │full            │full
-MMA warp:              MMA tile 0       MMA tile 1       ...
-                              │tmem_full
-Epilogue warps:               read tile 0 / TMA store
-                                     │tmem_empty
-```
-
-它们通过 barrier 组成长期运转的生产者—消费者流水线。TMA 可以领先 MMA 最多 4 个 K block；epilogue 把结果读出 TMEM 后便尽快释放 TMEM，使后续 MMA 能与尚未结束的 TMA Store 重叠。
-
-### 1.4 三种“stage”不要混淆
-
-| 缓冲 | 数量 | 被谁复用 | 保护它的同步 |
-|---|---:|---|---|
-| A/B SMEM pipeline stage | 4 | TMA 与 MMA | `full_bar[s]` / `empty_bar[s]` |
-| TMEM accumulator stage | 1 | MMA 与 epilogue | `tmem_full_bar[0]` / `tmem_empty_bar[0]` |
-| CD SMEM TMA-store stage | 2 | epilogue 填充与 TMA Store | bulk-group `wait_group` |
-
-Level 9 没有 TMEM double buffering：`accum_idx` 恒为 0，但 `accum_phase` 每个 tile 翻转，仍然可以安全地重复使用同一块 TMEM。它有两级 CD SMEM buffering，用于让 TMEM→SMEM 和先前的 TMA Store 重叠。
-
-### 1.5 Barrier 协议总表
-
-| Barrier | 等待者 | 完成者 | 含义 |
+| 缓冲 | 数量与容量（每 CTA） | 复用者 | 保护方式 |
 |---|---|---|---|
-| `full_bar[s]` | leader 的 MMA warp | 两个 CTA 的 TMA + tx-count | 两边 stage `s` 的 A/B 都已进入 SMEM |
-| `empty_bar[s]` | 两个 CTA 的 TMA warp，各等本地副本 | UMMA commit multicast | UMMA 已读完 stage `s`，SMEM 可以覆盖 |
-| `tmem_full_bar[0]` | 两个 CTA 的 epilogue warps | 最后一个 K block 的 UMMA commit | 完整 FP32 tile 已在 TMEM 中 |
-| `tmem_empty_bar[0]` | leader 的 MMA warp | 两 CTA × 128 个 epilogue 线程 | 所有线程都已读完 TMEM，可以写下一 tile |
-| named barrier 1 | 同一 CTA 的 128 个 epilogue 线程 | 这些线程自己 | CD SMEM 填充和 TMA Store 发射前的 CTA 内集合 |
+| A/B SMEM stage | 4 × 48 KiB | TMA、UMMA | `full_bar[s]` / `empty_bar[s]` |
+| TMEM accumulator stage | 1 × 256 KiB | UMMA、epilogue | `tmem_full_bar[0]` / `tmem_empty_bar[0]` |
+| CD SMEM store stage | 2 × 16 KiB | epilogue、TMA Store | bulk-group `wait_group` |
 
-`full/empty` 是 A/B SMEM 的循环队列；`tmem_full/tmem_empty` 是 TMEM 的循环队列。名称都从消费者视角理解：`full` 表示有数据可消费，`empty` 表示可被生产者覆盖。
+`full` 表示本轮数据已可消费，`empty` 表示旧数据已用完、允许覆盖。Barrier 的 **phase** 区分同一同步对象的连续轮次；下文用 stage 表和代码跟踪它的翻转。
 
-## 2. Level 9 核心代码精读
+| Barrier | 等待者 | 完成条件 | 允许继续的操作 |
+|---|---|---|---|
+| leader 的 `full_bar[s]` | leader MMA warp | 两 CTA 的 arrival 与合计 TMA 字节数都满足 | UMMA 读取输入 |
+| 各 CTA 的 `empty_bar[s]` | 各自 TMA warp | UMMA commit 完成后 multicast arrival | TMA 覆盖该输入 stage |
+| 各 CTA 的 `tmem_full_bar[0]` | 各自 epilogue | 最后 K block 的 UMMA commit 完成 | 读取完整累加结果 |
+| leader 的 `tmem_empty_bar[0]` | leader MMA warp | 两 CTA 各 128 个读取线程完成 arrival | 下一 tile 覆盖 TMEM |
+| named barrier 1 | 本 CTA 的 128 个 epilogue 线程 | 这 128 个线程集合 | 复用 CD stage 或发出 Store |
 
-下面保留 Level 9 的核心控制流，并把 Level 2、Level 6 中已有的中文注释迁移到对应位置。helper 的 PTX 封装和 host launch 放在附录。
+## 沿 Level 9 代码阅读
 
-### 2.1 配置与内存预算
+### 配置与内存预算
+
+配置先确定空间分工，再决定能够同时保留几轮数据。每 CTA 的 SMEM 共约 224 KiB，其中大部分留给四轮 A/B 输入，剩下两块 16 KiB 给输出暂存。
 
 ```cpp
-static constexpr uint32_t BLOCK_M      = 256;
-static constexpr uint32_t BLOCK_N      = 256;
-static constexpr uint32_t BLOCK_K      = 64;
+static constexpr uint32_t BLOCK_M = 256;
+static constexpr uint32_t BLOCK_N = 256;
+static constexpr uint32_t BLOCK_K = 64;
 static constexpr uint32_t CLUSTER_SIZE = 2;
-static constexpr uint32_t NUM_STAGES   = 4;
-
-// 每个 CTA 的 TMEM 只有 128 条 lane；一个 256 行 tile 分成两个 M-wave。
+static constexpr uint32_t NUM_STAGES = 4;
 static constexpr uint32_t WAVE_BLOCK_M = 128;
-static constexpr uint32_t NUM_M_WAVES  = BLOCK_M / WAVE_BLOCK_M;  // 2
-
-// 每个 CTA 只加载 B 的一半；cta_group::2 UMMA 组合两个半块。
-static constexpr uint32_t LOAD_N_PER_CTA = BLOCK_N / CLUSTER_SIZE; // 128
-static constexpr uint32_t UMMA_M = WAVE_BLOCK_M * CLUSTER_SIZE;    // 256
-static constexpr uint32_t UMMA_N = BLOCK_N;                         // 256
+static constexpr uint32_t NUM_M_WAVES = BLOCK_M / WAVE_BLOCK_M;
+static constexpr uint32_t LOAD_N_PER_CTA = BLOCK_N / CLUSTER_SIZE;
+static constexpr uint32_t UMMA_M = WAVE_BLOCK_M * CLUSTER_SIZE;
+static constexpr uint32_t UMMA_N = BLOCK_N;
 static constexpr uint32_t UMMA_K = 16;
-
-static constexpr uint32_t SMEM_A_SIZE =
-    BLOCK_M * BLOCK_K * sizeof(__nv_bfloat16);          // 32 KiB/stage
-static constexpr uint32_t SMEM_B_SIZE =
-    LOAD_N_PER_CTA * BLOCK_K * sizeof(__nv_bfloat16);   // 16 KiB/stage
-static constexpr uint32_t TMA_BYTES = SMEM_A_SIZE + SMEM_B_SIZE; // 48 KiB/CTA
-
-// TMEM: 1 个 accumulator stage × 2 个 M-wave × 256 列 = 512 columns。
-// 分配一个 column 时会同时得到该 column 的全部 128 条 lane。
 static constexpr uint32_t NUM_EPILOGUE_STAGES = 1;
 static constexpr uint32_t TMEM_COLS =
-    NUM_EPILOGUE_STAGES * NUM_M_WAVES * BLOCK_N;        // 512
-
-static constexpr uint32_t NUM_THREADS          = 256;
-static constexpr uint32_t NUM_EPILOGUE_THREADS = 128;
-
-// 每个 TMA Store 搬 128 行 × 64 个 BF16 = 16 KiB。
-// 一个 CTA tile 有 2 个 wave × 4 个 N-chunk = 8 次 store。
-static constexpr uint32_t STORE_BLOCK_M = 128;
-static constexpr uint32_t STORE_BLOCK_N = 64;
-static constexpr uint32_t NUM_STORES    = BLOCK_N / STORE_BLOCK_N; // 4
-static constexpr uint32_t NUM_TMA_STORE_STAGES = 2;
+    NUM_EPILOGUE_STAGES * NUM_M_WAVES * BLOCK_N;
 ```
 
-SMEM 采用 `[CD][所有 A stage][所有 B stage][barriers][tmem_ptr]`：
+| SMEM 区域（按地址从低到高） | 计算 | 容量 |
+|---|---|---:|
+| CD store buffers | $2\times128\times64\times2$ bytes | 32 KiB |
+| A stages | $4\times256\times64\times2$ bytes | 128 KiB |
+| B stages | $4\times128\times64\times2$ bytes | 64 KiB |
+| Barrier 与 TMEM 地址槽 | 11 个 8-byte 槽与 4-byte 地址 | 92 bytes |
+| 合计 | `SMEM_SIZE` | 229,468 bytes |
 
-```text
-CD store buffers       2 × 16 KiB =  32 KiB
-A pipeline             4 × 32 KiB = 128 KiB
-B pipeline             4 × 16 KiB =  64 KiB
-barriers + tmem_ptr                  < 1 KiB
-                                      --------
-总计约                              224 KiB
-```
+A stages 和 B stages 各自连续排列。相邻 stage 的地址步长固定，后面的 MMA warp 因而可以用各 lane 保存 descriptor，再通过 shuffle 取出当前 stage 所需的值。TMEM 单独分配，不计入这张 SMEM 预算表。
 
-A/B stage 分离后，相邻 stage 的 descriptor 低 32 位具有固定步长，MMA warp 才能用 `__shfl_sync` 缓存 descriptor，而不必让每个线程持有数组。
+### Persistent scheduler 与配对条件
 
-### 2.2 Persistent 2D swizzle scheduler
+Host 只启动数量受限的 CTA，每个 CTA 反复领取不同 tile，形成 persistent loop。Scheduler 是确定性的编号计算，不需要一个额外线程维护全局任务队列。
 
 ```cpp
-// 只启动有限数量的 cluster：num_clusters = min(num_sms / 2, num_tiles);
-// 核心是 uint32_t tile_idx = (++current_iter) * num_clusters + cluster_id;
-// 假设有 32 个 cluster，则 cluster 0 负责 tile 0, 32, 64, 96, ...，cluster 1 负责 tile 1, 33, 65, 97, ...，以此类推。
-// tile 映射还做了 swizzle，提高 L2 Cache locality
-//
-// 上面是 Level 6 的原注。Level 9 已改为 per-CTA scheduler：
-//   num_ctas = min(num_sms, num_tiles)，然后向下取偶数；
-//   cta_id   = blockIdx.x；
-// 因而相邻 CTA 属于同一 cluster，并分别得到不同的 M tile。
+uint32_t tile_idx =
+    static_cast<uint32_t>(++current_iter) * num_ctas + cta_id;
+if (tile_idx >= num_tiles) return false;
 
+uint32_t tpg = num_n_blocks * SWIZZLE_GROUP_SIZE;
+uint32_t gi  = tile_idx / tpg;
+uint32_t fm  = gi * SWIZZLE_GROUP_SIZE;
+uint32_t ig  = tile_idx % tpg;
+uint32_t mg  = min(SWIZZLE_GROUP_SIZE, num_m_blocks - fm);
+m_block = fm + ig % mg;
+n_block = ig / mg;
+return true;
+```
+
+这里 `SWIZZLE_GROUP_SIZE=16`。先在一组 M block 内变化行号，再推进 N，使相邻 CTA 更容易复用同一段 B。以 `num_ctas=192` 为编号示例，CTA 0 枚举 `0,192,384,…`，CTA 1 枚举 `1,193,385,…`；随后才用上面的公式映射到二维坐标。
+
+**两个 CTA 必须得到相同 `n_block`，并且执行相同数量的迭代。** 只把 launch 的 CTA 数向下取偶数，还不能保证任意 shape 都满足这件事。
+
+令 `num_m_blocks=ceil(M/256)`。它为正偶数、`num_ctas` 为正偶数时，每组 M block 的长度都是偶数（完整组为 16，末组也为偶数），相邻的偶/奇编号不会跨过 N 边界，总 tile 数也为偶数。这给出了当前映射保持配对的充分条件。若 M block 数为奇数，则需要逐项分析，不能直接套用总览中的分工。
+
+例如取 `M=768、N=512`，第一轮有以下映射：
+
+| CTA 编号 | 所属 cluster | `m_block` | `n_block` |
+|---|---:|---:|---:|
+| 0 | 0 | 0 | 0 |
+| 1 | 0 | 1 | 0 |
+| 2 | 1 | 2 | 0 |
+| 3 | 1 | 0 | 1 |
+
+第二个 cluster 的两半 B 已来自不同 N 区间。这是对索引公式的推导；TMA 的 OOB 处理只能处理访存边缘，无法修复这种配对。完整可运行条件还包括 tensor map 的地址/stride 对齐、硬件资源和有效 launch 配置。原 host 没有为这些 shape 情况提供通用回退，后文的性能表也只代表作者测试的尺寸。
+
+**各角色为什么各有一份 scheduler？** TMA、MMA、epilogue 在同一个 CTA 中枚举相同序列，却可以推进到不同位置：TMA 正在预取后续 K block 时，MMA 可能仍在计算当前 tile，epilogue 仍在处理前一个结果。它们分别持有线程私有状态，由 barrier 对齐数据依赖。即使把构造语句移到分支外，各线程得到的也仍是独立实例。
+
+<details>
+<summary>完整 TileScheduler 定义</summary>
+
+```cpp
 struct TileScheduler {
     uint32_t num_m_blocks, num_n_blocks, num_tiles, num_ctas, cta_id;
     int current_iter;
-
     __device__ TileScheduler(uint32_t M, uint32_t N, uint32_t nc)
         : num_m_blocks((M + BLOCK_M - 1) / BLOCK_M),
           num_n_blocks((N + BLOCK_N - 1) / BLOCK_N),
           num_tiles(num_m_blocks * num_n_blocks),
-          num_ctas(nc),
-          cta_id(blockIdx.x),
-          current_iter(-1) {}
-
+          num_ctas(nc), cta_id(blockIdx.x), current_iter(-1) {}
     __device__ bool get_next_block(uint32_t& m_block, uint32_t& n_block) {
-        // persistent 分配：每个 CTA 每轮跨过 num_ctas 个线性 tile。
-        uint32_t tile_idx =
-            static_cast<uint32_t>(++current_iter) * num_ctas + cta_id;
+        uint32_t tile_idx = static_cast<uint32_t>(++current_iter) * num_ctas + cta_id;
         if (tile_idx >= num_tiles) return false;
-
-        // 每 16 个 M block 组成一组；组内先变化 M，再变化 N。
-        // 这样一批相邻 CTA 共享 n_block，B 的相同区域更容易留在 L2。
-        uint32_t tiles_per_group = num_n_blocks * SWIZZLE_GROUP_SIZE;
-        uint32_t group_idx       = tile_idx / tiles_per_group;
-        uint32_t first_m         = group_idx * SWIZZLE_GROUP_SIZE;
-        uint32_t in_group        = tile_idx % tiles_per_group;
-        uint32_t m_in_group      = min(SWIZZLE_GROUP_SIZE,
-                                       num_m_blocks - first_m);
-
-        m_block = first_m + in_group % m_in_group;
-        n_block = in_group / m_in_group;
+        // Group M-blocks in chunks of SWIZZLE_GROUP_SIZE, sweep N within each group
+        uint32_t tpg = num_n_blocks * SWIZZLE_GROUP_SIZE;
+        uint32_t gi  = tile_idx / tpg;
+        uint32_t fm  = gi * SWIZZLE_GROUP_SIZE;
+        uint32_t ig  = tile_idx % tpg;
+        uint32_t mg  = min(SWIZZLE_GROUP_SIZE, num_m_blocks - fm);
+        m_block = fm + ig % mg;
+        n_block = ig / mg;
         return true;
     }
 };
 ```
 
-例如 `num_ctas=192` 时，CTA 0 处理线性 tile `0, 192, 384, ...`，CTA 1 处理 `1, 193, 385, ...`。swizzle 再把线性编号映射成 `(m_block,n_block)`。在本教程针对的合法 shape 上，同一 cluster 的偶/奇 CTA 保持相同 `n_block`，从而能共同组成 B 的完整 256 列。
+</details>
 
-### 2.3 Kernel 初始化
+### 初始化：发布 barrier，分配 TMEM
 
-每个 CTA 初始化：
-- 用于在 TMA producer 和 UMMA consumer 之间同步的 `full_bar[NUM_STAGES]` 和 `empty_bar[NUM_STAGES]`
-- 用于在 UMMA producer 和 epilogue consumer 之间同步的 `tmem_ful_bar[NUM_EPILOGUE_STAGES]` 和 `tmem_empty_bar[NUM_EPILOGUE_STAGES]`
-
-然后预取 A、B、D 的 TMA descriptor，并准备 UMMA 的 instruction descriptor
+每个 CTA 都有自己的 SMEM 和 barrier 副本。初始化代码先计算地址，随后设置计数。`full_bar` 和 `tmem_empty_bar` 的实际消费发生在 leader，部分通知需要从 peer 路由过去；另外两类 barrier 则在两边各自等待。
 
 ```cpp
-__global__ void
-__cluster_dims__(2, 1, 1)
-__launch_bounds__(NUM_THREADS, 1)
-bf16_gemm_2sm_kernel(
-    const __grid_constant__ CUtensorMap tma_a,
-    const __grid_constant__ CUtensorMap tma_b,
-    const __grid_constant__ CUtensorMap tma_d,
-    uint32_t M, uint32_t N, uint32_t K,
-    uint32_t num_ctas)
-{
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000))
-    const uint32_t warp_idx  = get_warp_id();
-    const uint32_t lane_idx  = get_lane_id();
-    const uint32_t cta_rank  = get_cluster_rank();
-    const bool     is_leader = (cta_rank == 0);
+if (warp_idx == 1 && elect_one()) {
+    for (uint32_t s = 0; s < NUM_STAGES; ++s) {
+        barrier_init(full_bar[s], CLUSTER_SIZE);
+        barrier_init(empty_bar[s], 1);
+    }
+    for (uint32_t e = 0; e < NUM_EPILOGUE_STAGES; ++e) {
+        barrier_init(tmem_full_bar[e], 1);
+        barrier_init(tmem_empty_bar[e],
+                     CLUSTER_SIZE * NUM_EPILOGUE_THREADS);
+    }
+    fence_barrier_init();
+}
+if (warp_idx == 2)
+    tmem_alloc_2sm(tmem_addr, TMEM_COLS);
+cluster_sync();
+```
 
-    extern __shared__ __align__(1024) uint8_t smem_buf[];
+`elect_one()` 在当前 warp 中选一个活跃线程发出操作；TMEM 分配要求整个 warp 参与，所以 warp 2 的分支没有套这个条件。Warp 0 还会预取 A、B、D 的 TMA descriptor，这时取的是描述信息，张量加载发生在主循环。
 
-    // 每个 CTA 都有自己的 SMEM 和 barrier 副本。
-    // full_bar 在 leader CTA arrive 和 wait（因为 leader 负责 issue UMMA）
-    // empty_bar 则各 CTA 等自己的副本。
+`fence_barrier_init()` 发布本线程完成的 mbarrier 初始化，`cluster_sync()` 让整个 cluster 集合后再进入工作阶段。这两个调用共同保证后面的跨 CTA 通知有已初始化的目标。Barrier 和 TMEM 的初始化都在 persistent loop 之外，后续通过 phase 区分轮次。
+
+<details>
+<summary>SMEM 指针与 barrier 副本的地址设置</summary>
+
+```cpp
+    // --- Barrier setup ---
     uint64_t* full_bar[NUM_STAGES];
     uint64_t* empty_bar[NUM_STAGES];
     for (uint32_t s = 0; s < NUM_STAGES; ++s) {
-        full_bar[s]  = reinterpret_cast<uint64_t*>(
-            smem_buf + OFF_BAR + s * 8);
-        empty_bar[s] = reinterpret_cast<uint64_t*>(
-            smem_buf + OFF_BAR + NUM_STAGES * 8 + s * 8);
+        full_bar[s]  = reinterpret_cast<uint64_t*>(smem_buf + OFF_BAR + s * 8);
+        empty_bar[s] = reinterpret_cast<uint64_t*>(smem_buf + OFF_BAR + NUM_STAGES * 8 + s * 8);
     }
-
     uint64_t* tmem_full_bar[NUM_EPILOGUE_STAGES];
     uint64_t* tmem_empty_bar[NUM_EPILOGUE_STAGES];
     for (uint32_t e = 0; e < NUM_EPILOGUE_STAGES; ++e) {
-        tmem_full_bar[e] = reinterpret_cast<uint64_t*>(
-            smem_buf + OFF_BAR + NUM_STAGES * 16 + e * 8);
-        tmem_empty_bar[e] = reinterpret_cast<uint64_t*>(
-            smem_buf + OFF_BAR + NUM_STAGES * 16
-                     + NUM_EPILOGUE_STAGES * 8 + e * 8);
+        tmem_full_bar[e]  = reinterpret_cast<uint64_t*>(smem_buf + OFF_BAR + NUM_STAGES * 16 + e * 8);
+        tmem_empty_bar[e] = reinterpret_cast<uint64_t*>(smem_buf + OFF_BAR + NUM_STAGES * 16 + NUM_EPILOGUE_STAGES * 8 + e * 8);
     }
-
     uint32_t* tmem_addr = reinterpret_cast<uint32_t*>(smem_buf + OFF_TMEM);
+
+    // SMEM pointers (separated layout)
     uint8_t* smem_cd_base = smem_buf + OFF_CD;
+    auto get_smem_a = [&](uint32_t s) -> void* { return smem_buf + OFF_A + s * SMEM_A_SIZE; };
+    auto get_smem_b = [&](uint32_t s) -> void* { return smem_buf + OFF_B + s * SMEM_B_SIZE; };
+```
 
-    auto get_smem_a = [&](uint32_t s) -> void* {
-        return smem_buf + OFF_A + s * SMEM_A_SIZE;
-    };
-    auto get_smem_b = [&](uint32_t s) -> void* {
-        return smem_buf + OFF_B + s * SMEM_B_SIZE;
-    };
+</details>
 
-    // Prefetch TMA descriptors
-    // 从当前 warp 的活跃线程中选出一个线程
-    if (warp_idx == 0 && elect_one()) {
-        // 这里预取的是 TMA descriptor，而不是 A、B 矩阵本身
+### TMA producer：等待空位，再加载一个 K block
 
-        // TMA descriptor 主要包含 A/B 的:
-        // global memory base addr.,
-        // shape,
-        //每个维度的 stride,
-        // data type,
-        // 每次 TMA load 的 tile shape
-        // SMEM swizzle 方式
-        // 越界处理方式
+每个 CTA 的 warp 0 选一个线程发出加载。该线程先等待本地 `empty_bar[stage]`，保证上次 UMMA 已经用完这一格缓冲；随后向 leader 的 `full_bar[stage]` 登记本轮工作。
 
-        // TMA descriptor 是在 host 端创建的，作为 __grid_constant__ 传入 kernel
-        prefetch_tma(&tma_a);
-        prefetch_tma(&tma_b);
-        prefetch_tma(&tma_d);
+```cpp
+barrier_wait(empty_bar[stage], phase ^ 1);
+if (is_leader) {
+    barrier_arrive_expect_tx(full_bar[stage],
+                            TMA_BYTES * CLUSTER_SIZE);
+} else {
+    barrier_arrive_cluster(full_bar[stage], 0);
+}
+
+int32_t kc = kb * BLOCK_K;
+tma_load_2d_cg2(get_smem_a(stage), &tma_a,
+                 full_bar[stage], kc, m_coord);
+tma_load_2d_cg2(get_smem_b(stage), &tma_b,
+                 full_bar[stage], kc, n_coord);
+
+stage = (stage + 1) % NUM_STAGES;
+phase ^= (stage == 0);
+```
+
+上述片段位于每个 tile 的 `kb` 循环内。A 的起始行是 `m_block * 256`，B 的起始 N 行是 `n_block * 256 + cta_rank * 128`。每个 CTA 加载 48 KiB，两个 CTA 合计 96 KiB；leader 登记这份合计字节数，每个 CTA 各贡献一次 arrival。只有 arrival 与 TMA 的字节完成条件都满足，本轮 `full_bar` 才完成。
+
+TMA 的目标 SMEM 保持本地地址，完成通知则路由到 leader。这个区别决定了“数据各放各处、MMA 统一等就绪”的组织方式，相关 helper 见附录。
+
+**四格缓冲怎样绕回？** `stage` 与 `phase` 在 persistent loop 外初始化为 0；跨输出 tile 时继续使用，不清零。以下按所有 K block 的累计处理序号展示首次绕回：
+
+| 累计 K block 序号 | 使用的 stage | 本轮 phase | TMA 等待的 empty parity | 含义 |
+|---:|---:|---:|---:|---|
+| 0 | 0 | 0 | 1 | 首次使用，尚无旧 UMMA 占用 |
+| 1 | 1 | 0 | 1 | 首次使用 |
+| 2 | 2 | 0 | 1 | 首次使用 |
+| 3 | 3 | 0 | 1 | 首次使用；之后 stage 绕回 0 |
+| 4 | 0 | 1 | 0 | 等第 0 个 K block 的 UMMA 归还 stage 0 |
+| 5 | 1 | 1 | 0 | 等第 1 个 K block 的 UMMA 归还 stage 1 |
+
+初始化后的首次 `phase ^ 1` 等待立即通过；之后它表示等待该格上一轮的完成。MMA 等待 `full_bar` 时使用本轮 `phase`。四个 stage 限制了尚未归还的输入缓冲数量，不能理解为可以无条件预取四个完整输出 tile。
+
+### MMA consumer：等输入、发计算、归还缓冲
+
+Leader 的 warp 1 全部参与等待与 shuffle，实际 UMMA 和 commit 由一个 elected thread 发射。本节将这一分支按数据依赖拆开。
+
+**缓存四个 stage 的 descriptor。** descriptor 的低位包含以 16 bytes 为单位的 SMEM 地址，高位保留布局信息。Lane 0–3 各存一个 stage 的低位，计算时从对应 lane 广播：
+
+```cpp
+uint64_t desc0_a = make_smem_desc(get_smem_a(0), UMMA_SBO);
+uint64_t desc0_b = make_smem_desc(get_smem_b(0), UMMA_SBO);
+uint32_t ahi = static_cast<uint32_t>(desc0_a >> 32);
+uint32_t bhi = static_cast<uint32_t>(desc0_b >> 32);
+uint32_t a_lo_base = static_cast<uint32_t>(desc0_a);
+uint32_t b_lo_base = static_cast<uint32_t>(desc0_b);
+uint32_t my_a_lo = a_lo_base
+    + (lane_idx < NUM_STAGES ? lane_idx * (SMEM_A_SIZE / 16) : 0u);
+uint32_t my_b_lo = b_lo_base
+    + (lane_idx < NUM_STAGES ? lane_idx * (SMEM_B_SIZE / 16) : 0u);
+```
+
+**开始新 tile 前，等 TMEM 归还。** TMEM 只有一个 accumulator stage，所以 `accum_idx` 总为 0；`accum_phase` 每个输出 tile 翻转一次。下一 tile 必须等两个 CTA 的所有 epilogue 线程完成旧结果读取。
+
+```cpp
+uint32_t accum_idx = scheduler.current_iter % NUM_EPILOGUE_STAGES;
+uint32_t accum_phase =
+    (scheduler.current_iter / NUM_EPILOGUE_STAGES) & 1;
+barrier_wait(tmem_empty_bar[accum_idx], accum_phase ^ 1);
+tcgen05_fence_after();
+```
+
+随后进入 `kb` 循环，等待该 K block 的 A/B 数据：
+
+```cpp
+barrier_wait(full_bar[stage], phase);
+tcgen05_fence_after();
+uint32_t cur_a_lo = __shfl_sync(0xFFFFFFFF, my_a_lo, stage);
+uint32_t cur_b_lo = __shfl_sync(0xFFFFFFFF, my_b_lo, stage);
+```
+
+`barrier_wait()` 等待目标 phase 完成，`tcgen05_fence_after()` 则约束后续 tcgen05 操作与这个线程同步点的顺序。二者配合后，Tensor Core 才按这里要求的依赖读取或覆盖存储。
+
+| 交接 | 等待条件 | fence 之后的操作 |
+|---|---|---|
+| TMA → UMMA | `full_bar` | UMMA 读取 A/B SMEM |
+| UMMA → epilogue | `tmem_full_bar` | `tcgen05.ld` 读取 TMEM |
+| epilogue → 下一 tile | `tmem_empty_bar` | UMMA 覆盖同一 TMEM |
+
+**每轮 K block 发出 8 次 UMMA。** 外层 `k` 划分四个 K-step，内层 `w` 选择两个 M-wave。代码保持 K-step 在外、M-wave 在内的实际顺序：
+
+```cpp
+if (elect_one()) {
+    #pragma unroll
+    for (uint32_t k = 0; k < BLOCK_K / UMMA_K; ++k) {
+        uint32_t b_lo = cur_b_lo + k * 2;
+        uint64_t bd = ((uint64_t)bhi << 32) | b_lo;
+        #pragma unroll
+        for (uint32_t w = 0; w < NUM_M_WAVES; ++w) {
+            uint32_t a_lo = cur_a_lo
+                + w * (WAVE_BLOCK_M * BLOCK_K
+                       * sizeof(__nv_bfloat16) / 16)
+                + k * 2;
+            uint64_t ad = ((uint64_t)ahi << 32) | a_lo;
+            uint32_t tmem_offset =
+                accum_idx * NUM_M_WAVES * BLOCK_N + w * BLOCK_N;
+            uint32_t accum = (kb > 0 || k > 0) ? 1u : 0u;
+            umma_f16_cg2(tmem_offset, ad, bd, idesc, accum);
+        }
     }
-
-    // Q：为什么不直接指定 threadIdx.x == 0？
-    // A：这里需要“当前角色 warp 中恰好一个活跃线程”，并不总是 warp 0。
-    //    warp 1、warp 4 等角色根本不包含 thread 0。完整 warp 时可以手写
-    //    lane_idx == 0，但 elect_one() 更直接表达 one-issuer 契约，也不绑定固定 lane。
-
-    // barrier 初始化在 persistent loop 之外，因为 pipeline 是跨 tile 连续运转的
-    // 不需要在 tile 边界重新归零
-    if (warp_idx == 1 && elect_one()) {
-        for (uint32_t s = 0; s < NUM_STAGES; ++s) {
-            barrier_init(full_bar[s], CLUSTER_SIZE); // 两个 CTA 各贡献一次 arrival
-            barrier_init(empty_bar[s], 1);           // 一次 UMMA commit arrival
-        }
-        for (uint32_t e = 0; e < NUM_EPILOGUE_STAGES; ++e) {
-            barrier_init(tmem_full_bar[e], 1);
-            // 两边每个 epilogue 线程都要证明自己的 TMEM load 已结束。
-            barrier_init(tmem_empty_bar[e],
-                         CLUSTER_SIZE * NUM_EPILOGUE_THREADS); // 256
-        }
-
-        // 把 barrier 初始化正式*发布*给 cluster 内其他线程、其他 CTA，以及后续使用 mbarrier 的异步硬件操作
-        // 后面的 cluster_sync 的确同时有执行同步和 release/acquire；
-        // 但它的内存可见性保证针对 arrive 前的普通 memory access，mbarrier.init 不是普通 st.shared
-        // PTX 为它单独定义了 fence.mbarrier_init：只发布同一线程此前执行的 init。
-
-        // 因此这里两者分工是：
-        //   fence_barrier_init：把 mbarrier 的初始状态发布到 cluster 范围；
-        //   cluster_sync：让所有 CTA 集合，并在返回后才开始远程 arrive/TMA/UMMA。
-        // 两者都是必要的
-        fence_barrier_init();
-    }
-
-    // tcgen05.alloc 是 warp-collective，因此整个 warp 2 参与，而不是 elect_one。
-    if (warp_idx == 2)
-        tmem_alloc_2sm(tmem_addr, TMEM_COLS);
-
-    // 封装了 barrier.cluster.arrive.aligned 和 barrier.cluster.wait.aligned
-    // 同时包含：
-    // 执行同步：所有线程/CTA 都到达后才能继续
-    // release：发布 arrive 之前的操作
-    // acquire：wait 返回之后可以观察到其他线程发布的操作
-    cluster_sync();
-
-    const uint32_t num_k_blocks = (K + BLOCK_K - 1) / BLOCK_K;
-
-    // instruction descriptor 告诉 tensor core A/B 矩阵的 data type、累加值 data type、每次 UMMA 的 tile shape
-    const uint32_t idesc = make_instr_desc(UMMA_M, UMMA_N);
-```
-
-
-### 2.4 TMA warp：生产 A/B SMEM stage
-
-每个 CTA 的 warp 0 的其中一个线程发射 TMA 指令，以 NUM_STAGES 级流水线将 A/B tile 加载到本地 SMEM。
-- 每个 CTA 将一块 256x64 的 A tile 加载到自己的 SMEM
-- 每个 CTA 将一块 128x64 的 B tile 加载到自己的 SMEM
-
-两个 CTA 使用不同的 A tile 产生不同的输出 tile，但共享同一个 N 区间的 B 数据。
-
-```cpp
-    if (warp_idx == 0 && elect_one()) {
-        // ======================== TMA WARP ========================
-        // 每个 CTA 由 1 个 elected thread 发射 TMA；两个 CTA 独立运行此分支。
-        TileScheduler scheduler(M, N, num_ctas);
-        uint32_t m_block, n_block;
-        uint32_t stage = 0, phase = 0;
-
-        while (scheduler.get_next_block(m_block, n_block)) {  // persistent loop
-            // 两个 CTA 的 n_block 相同、m_block 不同。
-            const int32_t m_coord = m_block * BLOCK_M;
-            const int32_t n_coord =
-                n_block * BLOCK_N + cta_rank * LOAD_N_PER_CTA;
-
-            for (uint32_t kb = 0; kb < num_k_blocks; ++kb) {
-                // phase ^ 1 即当前 phase 的上一轮。
-                // 第一轮等待 phase ^ 1，立即返回
-                // 其后每轮等待上一轮 UMMA commit multicast 到 empty_bar[stage_idx]，才会返回
-                barrier_wait(empty_bar[stage], phase ^ 1);
-
-                // 先登记期待 byte count，再发射 TMA，防止 TMA 很快完成，但 barrier 还没登记 complete_tx
-                // 之后 leader CTA 会 wait full_bar 以确保 TMA 完成，然后发射 UMMA，所以这里把 tx-count 的登记集中在 leader CTA
-                if (is_leader) {
-                    barrier_arrive_expect_tx(
-                        full_bar[stage], TMA_BYTES * CLUSTER_SIZE);
-                } else {
-                    barrier_arrive_cluster(full_bar[stage], 0);
-                }
-
-                const int32_t kc = kb * BLOCK_K;
-
-                // 每个 CTA 加载：
-                //   A[256,64] = 32 KiB（不同 m tile）
-                //   B[128,64] = 16 KiB（完整 N tile 的不同一半）
-                // 目的地是自己的 SMEM buffer
-                tma_load_2d_cg2(
-                    get_smem_a(stage), &tma_a, full_bar[stage], kc, m_coord);
-                tma_load_2d_cg2(
-                    get_smem_b(stage), &tma_b, full_bar[stage], kc, n_coord);
-
-                stage = (stage + 1) % NUM_STAGES;
-                phase ^= (stage == 0); // 4 个 stage 绕一圈后切换 parity
-            }
-        }
-```
-
-### 2.5 MMA warp：消费 SMEM，生产 TMEM
-
-```cpp
-    } else if (warp_idx == 1 && is_leader) {
-        // ======================== MMA WARP ========================
-        // Level 9 与 Level 2/6 的区别：warp 1 的 32 个线程都参与 barrier_wait
-        // 和 __shfl_sync；只有 UMMA/commit 的实际发射由 elect_one() 限定为一个线程。
-
-        // 每个流水线阶段都需要 A/B 的 SMEM descriptor
-        // SMEM desc 的低 32 位是 SMEM 基址（每个 tile 不一样），高 32 位是 layout 等（每个阶段一样）
-        // 因此这里只每个阶段存低 32 位（alo[NUM_STAGES] / blo[NUM_STAGES]），高 32 位统一保存为 ahi/bhi
-        //
-        // 上三行是 Level 2 的原注。Level 9 不再真的保存 alo[]/blo[]：
-        // stage 分离布局让低 32 位可以由 stage 0 加固定 stride 得到，再用 shuffle 广播。
-        uint64_t desc0_a = make_smem_desc(get_smem_a(0), UMMA_SBO);
-        uint64_t desc0_b = make_smem_desc(get_smem_b(0), UMMA_SBO);
-        uint32_t ahi = static_cast<uint32_t>(desc0_a >> 32);
-        uint32_t bhi = static_cast<uint32_t>(desc0_b >> 32);
-
-        // ad/bd：A/B 的 SMEM 基址和 layout
-        // lane 0..3 分别缓存 stage 0..3 的 descriptor low；其余 lane 的值不用作源。
-        uint32_t a_lo_base = static_cast<uint32_t>(desc0_a);
-        uint32_t b_lo_base = static_cast<uint32_t>(desc0_b);
-        uint32_t my_a_lo = a_lo_base
-            + (lane_idx < NUM_STAGES ? lane_idx * (SMEM_A_SIZE / 16) : 0u);
-        uint32_t my_b_lo = b_lo_base
-            + (lane_idx < NUM_STAGES ? lane_idx * (SMEM_B_SIZE / 16) : 0u);
-
-        // 注意这里的 scheduler 和 warp 0 分支的 scheduler 是独立的实例
-        // 流水线稳定运行时，每个 warp 分支的 current_iter 不同，因此 scheduler 也需要是不同的实例
-        TileScheduler scheduler(M, N, num_ctas);
-        uint32_t m_block, n_block;
-        uint32_t stage = 0, phase = 0;
-
-        while (scheduler.get_next_block(m_block, n_block)) {
-            // level 6 的 epilogue 做了 double buffering，于是可以和 MMA 重叠
-            //
-            // 这里 Level 9 的 NUM_EPILOGUE_STAGES=1，没有 TMEM
-            // double buffering；它靠尽早把 TMEM 搬入两级 CD SMEM，让 MMA 与
-            // 后续 TMA Store 重叠。
-            uint32_t accum_idx =
-                scheduler.current_iter % NUM_EPILOGUE_STAGES; // 恒为 0
-            uint32_t accum_phase =
-                (scheduler.current_iter / NUM_EPILOGUE_STAGES) & 1; // 每 tile 翻转
-
-            // 首 tile 等待 phase^1 会立即返回；之后等两边 epilogue 的 256 次
-            // arrival，保证上一 tile 的所有 TMEM load 已结束。
-            barrier_wait(tmem_empty_bar[accum_idx], accum_phase ^ 1);
-
-            // Q：barrier_wait 已经同步，fence_after 是否冗余？
-            // A：不冗余。wait 证明 barrier phase 完成并提供 acquire；
-            //    tcgen05_fence_after 把“后续 tcgen05 操作”排在该同步点之后。
-            //    一个管 barrier 状态/内存可见性，一个管异步 Tensor Core pipeline 顺序。
-            tcgen05_fence_after();  // 保证后续的 tcgen05 发生在线程同步（wait）之后
-
-            for (uint32_t kb = 0; kb < num_k_blocks; ++kb) {
-                // 两个 CTA 的 TMA 数据都完成后，full_bar[stage] 才完成。
-                barrier_wait(full_bar[stage], phase);
-                tcgen05_fence_after();
-
-                // 32 个线程从保存 stage descriptor 的对应 lane 取值。
-                uint32_t cur_a_lo =
-                    __shfl_sync(0xFFFFFFFF, my_a_lo, stage);
-                uint32_t cur_b_lo =
-                    __shfl_sync(0xFFFFFFFF, my_b_lo, stage);
-
-                if (elect_one()) {
-                    #pragma unroll
-                    for (uint32_t k = 0; k < BLOCK_K / UMMA_K; ++k) {
-                        // descriptor 地址以 16 B 为单位；一个 K-step 前进
-                        // 16 个 BF16 = 32 B，因此 low field 增加 32/16 = 2。
-                        uint32_t b_lo = cur_b_lo + k * 2;
-                        uint64_t bd = ((uint64_t)bhi << 32) | b_lo;
-
-                        #pragma unroll
-                        for (uint32_t w = 0; w < NUM_M_WAVES; ++w) {
-                            // A descriptor 同时沿 M-wave 和 K-step 移动。
-                            // wave offset = 128 * 64 * 2 B / 16 B = 1024。
-                            uint32_t a_lo = cur_a_lo
-                                + w * (WAVE_BLOCK_M * BLOCK_K
-                                     * sizeof(__nv_bfloat16) / 16)
-                                + k * 2;
-                            uint64_t ad = ((uint64_t)ahi << 32) | a_lo;
-
-                            // wave 0 占 TMEM columns [0,256)，
-                            // wave 1 占 TMEM columns [256,512)。
-                            uint32_t tmem_offset =
-                                accum_idx * NUM_M_WAVES * BLOCK_N
-                                + w * BLOCK_N;
-
-                            // 这里的 ad/bd 是 SMEM descriptor，idesc 是 UMMA instruction descriptor
-                            // accum 指定是否累加：首轮为 0 表示初始化，后续轮次为 1 表示累加
-                            // 两个 wave 写不同 TMEM columns，所以它们在首个 K-step
-                            // 都应清零；accum 不依赖 w。
-                            uint32_t accum = (kb > 0 || k > 0) ? 1u : 0u;
-
-                            // leader CTA 的 warp 1 的一个线程发射 UMMA 指令，其他线程不发射
-                            umma_f16_cg2(tmem_offset, ad, bd, idesc, accum);
-                        }
-                    }
-                }
-
-                // commit 不是另一条 MMA，而是为此前发出的异步 UMMA 建立完成点。
-                // 完成后 multicast arrival 到两个 CTA 的 empty_bar[stage]，TMA
-                // 才能覆盖此 stage。
-                if (elect_one()) {
-                    umma_commit_2sm(empty_bar[stage]);
-
-                    // 最后一轮通知 TMEM 的累加结果可以读取
-                    if (kb == num_k_blocks - 1)
-                        umma_commit_2sm(tmem_full_bar[accum_idx]);
-                }
-
-                stage = (stage + 1) % NUM_STAGES;
-                phase ^= (stage == 0);
-            }
-        }  // exit persistent loop
-
-        // 最后一个 tile 后没有下一轮 tmem_empty wait，因此显式补等一次，
-        // 确保两个 CTA 的 epilogue 都已读完最后一个 tile 的 TMEM，
-        // 完成最后一次 tmem_empty phase，再退出 kernel。
-        int last_iter = scheduler.current_iter - 1;
-        if (last_iter >= 0) {
-            uint32_t last_idx = last_iter % NUM_EPILOGUE_STAGES;
-            uint32_t last_phase =
-                (last_iter / NUM_EPILOGUE_STAGES) & 1;
-            barrier_wait(tmem_empty_bar[last_idx], last_phase);
-        }
-```
-
-一轮 `kb` 共发出 `4 个 K-step × 2 个 M-wave = 8` 次 UMMA。TMA 与 UMMA 的完成协议不同：
-
-```text
-TMA：issue copy → complete_tx(bytes) → full_bar phase 完成
-UMMA：issue mma  → explicit commit → 完成后 arrival → empty/tmem_full phase 完成
-```
-
-`commit` 与 MMA 分开，使一批 UMMA 可以共享完成点，也能把同一批计算完成通知给不同消费者。它不是等待；真正等待发生在消费者的 `barrier_wait()`。
-
-### 2.6 Epilogue：消费 TMEM，生产 D
-
-Epilogue 的任务：先等待 UMMA 完成，然后
-1. 将 256×256 TMEM 拆成 8 个 128×64 子块
-2. 128 个线程并行执行 TMEM FP32 → 寄存器 → BF16 CD SMEM
-3. 尽早释放 TMEM
-4. 一个线程发射 TMA Store
-5. 两个 CD stage 交替复用
-
-先从 TMEM 读到寄存器，再从寄存器写到 SMEM，然后再写回 global memory。这样可以减少暴露在关键路径上的内存开销（因为 epilogue 和 umma 是串行的）。
-
-TMA 不能直接从 tensor memory 搬到 global memory。
-
-epilogue 里没有 warp specialization，但也用了两级流水线，这里是异步的 TMA 和 warp 在并行，而不是 warp 之间在并行。
-
-```cpp
-    } else if (warp_idx >= 4) {
-        // ======================== EPILOGUE WARPS ========================
-        // 两个 CTA 都执行 epilogue，因为它们的本地 TMEM 是不同的输出 tile。
-        // 128 个线程与 TMEM 的 128 条 lane 对应；每个线程处理一个本地结果行。
-        TileScheduler scheduler(M, N, num_ctas);
-        uint32_t m_block, n_block;
-
-        const uint32_t local_tid = threadIdx.x - 128; // 0..127
-        const uint32_t epi_warp  = local_tid / 32;    // 0..3
-        uint32_t tma_store_stage = 0;
-
-        while (scheduler.get_next_block(m_block, n_block)) {
-            uint32_t accum_idx =
-                scheduler.current_iter % NUM_EPILOGUE_STAGES; // 0
-            uint32_t accum_phase =
-                (scheduler.current_iter / NUM_EPILOGUE_STAGES) & 1;
-
-            // 等最后一个 K block 的 commit，证明完整 tile 已写入 TMEM。
-            barrier_wait(tmem_full_bar[accum_idx], accum_phase);
-            tcgen05_fence_after();
-            // 此时 TMEM 中有 256x256 个 FP32
-            // 但是本地 TMEM 只有 128 个 lane，因此 M 方向分成 NUM_M_WAVES=2 个 wave
-            // TMA store 每次只写 64 列，因此 N 方向分成 NUM_STORES=4 个 store
-            // 共有 128 个 epilogue 线程，每个线程负责一个 TMEM lane，即 2 x 4 = 8 次 TMA store
-
-            #pragma unroll
-            for (uint32_t w = 0; w < NUM_M_WAVES; ++w) {
-                #pragma unroll
-                for (uint32_t s = 0; s < NUM_STORES; ++s) {
-                    // CD SMEM 有两个 stage，每个 stage 16 KiB，足够存放 128 行 × 64 列的 BF16。
-                    // 这里 wait_group<NUM_TMA_STORE_STAGES - 1> 的意思是
-                    // 最多允许 NUM_TMA_STORE_STAGES - 1 个较新的 TMA Store group 仍然 on flight。
-                    // 这保证当 wrap-around 回某个 stage 时，之前使用该 stage 的 store 已经完成。
-                    // 只有一个线程执行 wait，之后用 named barrier 通知另外 127 个 epilogue 线程当前 CD stage 已经可以覆盖。
-                    if (epi_warp == 0 && elect_one())
-                        tma_store_wait<NUM_TMA_STORE_STAGES - 1>();
-                    named_barrier_sync(NUM_EPILOGUE_THREADS,
-                                       EPILOGUE_BAR_ID);
-
-                    uint32_t smem_stage_base = static_cast<uint32_t>(
-                        __cvta_generic_to_shared(
-                            smem_cd_base
-                            + tma_store_stage * SMEM_CD_PER_STAGE));
-
-                    // 从 TMEM 读取一个 128x64 的 tile，转成 BF16 并 pack 成 u32，写入到 CD SMEM
-                    // 每轮读取 8 个 FP32，共循环 8 次
-                    #pragma unroll
-                    for (uint32_t i = 0;
-                         i < STORE_BLOCK_N / ELEMS_PER_BANK_GROUP;
-                         ++i) {
-                        uint32_t tmem_col =
-                            accum_idx * NUM_M_WAVES * BLOCK_N
-                            + w * BLOCK_N
-                            + s * STORE_BLOCK_N
-                            + i * ELEMS_PER_BANK_GROUP;
-
-                        uint32_t r0, r1, r2, r3, r4, r5, r6, r7;
-                        tmem_load_8x(tmem_col,
-                                     r0, r1, r2, r3, r4, r5, r6, r7);
-
-                        // tcgen05.ld 是异步的；必须等寄存器结果可用后才能转换。
-                        tmem_load_fence();
-
-                        // 8 个 FP32 → 8 个 BF16，两个 BF16 打包进一个 u32。
-                        uint32_t p0 = pack_bf16(r0, r1);
-                        uint32_t p1 = pack_bf16(r2, r3);
-                        uint32_t p2 = pack_bf16(r4, r5);
-                        uint32_t p3 = pack_bf16(r6, r7);
-
-                        // 这里的 swizzle 是为了避免 bank conflict
-                        // XOR swizzle：不同 TMEM lane 写不同的 16B bank group，
-                        // 与 tma_d 的 SWIZZLE_128B descriptor 相匹配。
-                        uint32_t swizzled_col =
-                            i ^ (local_tid % BANK_GROUPS_PER_SWIZZLE);
-                        uint32_t smem_addr =
-                            smem_stage_base
-                            + local_tid * SWIZZLE_CD_BYTES
-                            + swizzled_col * BANK_GROUP_BYTES;
-
-                        st_shared_128(smem_addr, p0, p1, p2, p3);
-                    }
-
-                    // 读完最后一个 wave 的最后一个 N-chunk 之后，尽早释放 TMEM，以被 UMMA 复用
-                    if (w == NUM_M_WAVES - 1 &&
-                        s == NUM_STORES - 1) {
-                        // before_thread_sync 把“本线程此前的 tcgen05 load”排在
-                        // 随后的 arrival 前。随后两 CTA 的 128 个线程分别 arrive，
-                        // 共同满足 leader tmem_empty 的 count=256。
-                        tcgen05_fence_before();
-                        barrier_arrive_cluster(tmem_empty_bar[accum_idx], 0);
-                    }
-                    __syncwarp();
-
-                    tma_store_fence();    // proxy fence 使刚写入 CD SMEM 的 BF16 对 TMA async proxy 可见。
-                    named_barrier_sync(NUM_EPILOGUE_THREADS, EPILOGUE_BAR_ID);  // 保证所有 128 个线程都已经填完自己的行
-
-                    // 128 个线程填好 CD stage 后，仅一个线程发射 TMA Store。
-                    if (epi_warp == 0 && elect_one()) {
-                        const int32_t n_idx =
-                            n_block * BLOCK_N + s * STORE_BLOCK_N;
-                        const int32_t m_idx =
-                            m_block * BLOCK_M + w * WAVE_BLOCK_M;
-
-                        tma_store_2d(
-                            smem_cd_base
-                                + tma_store_stage * SMEM_CD_PER_STAGE,
-                            &tma_d, n_idx, m_idx);
-                        tma_store_commit();
-                    }
-
-                    // 切换 CD stage
-                    tma_store_stage = (tma_store_stage + 1) % NUM_TMA_STORE_STAGES;
-                }
-            }
-        }
-
-        // 最后离开 persistent loop 时，等待所有尚未完成的 TMA Store，确保 kernel 退出前 Global D 已写完。
-        if (epi_warp == 0 && elect_one())
-            tma_store_wait<0>();
-    }
-```
-
-
-### 2.7 清理
-
-```cpp
-    // 每个 CTA 内先等所有角色退出 persistent loop，再做 cluster 集合。
-    __syncthreads();
-    cluster_sync();
-
-    // cta_group::2 TMEM 需要两个 peer warp 协同释放。
-    if (warp_idx == 2)
-        tmem_dealloc_2sm(0, TMEM_COLS);
-#endif
 }
 ```
 
-## 3. 几个需要单独展开的问题
+`k * 2` 来自每步 16 个 BF16，共 32 bytes，相当于两个 16-byte 地址单位。A 还加上一个 wave 的偏移：`128 × 64 × 2 / 16 = 1024`。B 的两半由两 CTA 提供，不随本地 `w` 改变。
 
-### 3.1 Scheduler 为什么在每个角色分支中各建一个实例
+两个 wave 写入不同 TMEM column 区间，因此首个 K-step 都要从零开始累加。`accum` 只看 `kb`、`k`，不看 `w`；后续 K-step 才读取已有累加值。
 
-CUDA 局部变量属于线程私有寄存器。不存在“warp 0 调一次 scheduler，然后 warp 1 自动拿到结果”这种共享：若要共享，就必须另外写入 SMEM 并同步，反而把三个独立角色重新串行化。
+**提交完成点，允许输入 stage 复用。** 发出 UMMA 后不会立即覆盖 A/B。Commit 跟踪之前的异步计算，完成后向两个 CTA 的 `empty_bar` multicast arrival；最后一个 K block 还要通知输出结果就绪。
 
-因此每个角色都维护一个便宜的、确定性的本地 scheduler：
-
-```text
-TMA scheduler：可能已经枚举到 tile 3，正在预取
-MMA scheduler：可能正在 tile 1
-EPI scheduler：可能仍在写 tile 0
+```cpp
+if (elect_one()) {
+    umma_commit_2sm(empty_bar[stage]);
+    if (kb == num_k_blocks - 1)
+        umma_commit_2sm(tmem_full_bar[accum_idx]);
+}
+stage = (stage + 1) % NUM_STAGES;
+phase ^= (stage == 0);
 ```
 
-它们在真实时间上的 `current_iter` 可以不同，但用同一公式枚举同一 tile 序列。`full/empty/tmem_*` barrier 保证消费者不会越过生产者。
-
-从 C++ 语义说，可以把 `TileScheduler scheduler(...)` 的构造语句写到角色分支外；但每个线程得到的仍是独立实例，并没有变成“只调用一次”。这样还会让不需要 scheduler 的 warp 也持有相关状态，扩大变量 live range。放在分支里更准确地表达所有权。
-
-### 3.3 为什么需要 M-wave；为什么每个 SM 一次只有 128 行
-
-SM100 每个 CTA 的 TMEM 固定为 `128 lanes × 512 columns`，每个 cell 为 32 bit。`cta_group::2` 同时触及当前 CTA 和 peer CTA 的 TMEM，所以一次 2SM UMMA 的逻辑 `M=256` 可以理解成两边各产生 128 行本地结果：
-
-```text
-一次 wave：CTA 0 本地 128 行 + CTA 1 本地 128 行
-```
-
-但 Level 9 每个 CTA 自己要完成 256 行，因此每个 CTA 还要沿 A 的 M 方向做两次 wave：
-
-```text
-wave 0：本 CTA A[  0:128, :] → TMEM lanes 0..127, columns   0..255
-wave 1：本 CTA A[128:256, :] → TMEM lanes 0..127, columns 256..511
-```
-
-第二个 wave 不是使用“TMEM 第 128～255 行”——本地并没有这些 lane。它复用同样的 128 条 lane，把结果放进另一组 columns。epilogue 用 `w * WAVE_BLOCK_M` 恢复全局输出行偏移。
-
-这是 SM100 暴露的 TMEM/UMMA 数据通路组织，不是 tutorial 随意设定的常数。公开编程模型说明了 128 lanes，但没有公开晶体管级为什么选择 128；读代码时把它当作硬件固定维度即可。
-
-### 3.4 为什么 `barrier_wait()` 后还要 `tcgen05_fence_after()`
-
-它们回答不同的问题：
-
-```text
-barrier_wait：目标 phase 是否已经完成？生产者的数据/完成信号是否可观察？
-fence_after：后续 tcgen05 指令能否被排到这个线程同步点之前？
-```
-
-本算子中的三处典型组合是：
-
-```text
-wait full_bar      → fence_after → UMMA       // TMA/SMEM 交给 Tensor Core
-wait tmem_full     → fence_after → TMEM load  // UMMA/TMEM 交给 epilogue
-wait tmem_empty    → fence_after → next UMMA  // epilogue 交还 TMEM
-```
-
-`fence_after` 通常不等待 UMMA 完成；UMMA 完成由 `commit + mbarrier` 跟踪。反过来，仅有 wait 也没有建立 tcgen05 pipeline 所要求的专用代码移动顺序。因此两者不是重复同步。
-
-
-## 4. 从 Level 2 到 Level 9：优化主线
-
-只保留理解最终代码所需的演进：
-
-| Level | 关键变化 | 最终留下的思想 |
+| 异步工作 | 完成通知的来源 | 消费者在哪里等待 |
 |---|---|---|
-| 2 | 2-stage A/B SMEM，`full/empty`，2SM TMA completion 路由 | TMA 与 UMMA 用细粒度 barrier 交接 |
-| 3 | TMA/MMA 各自独立循环 | 真正的 warp specialization |
-| 4 | TMEM→SMEM 后合并写回 | epilogue 先重排数据再写 Global |
-| 5 | persistent scheduler + 2D swizzle | 少量常驻 CTA 处理多 tile，提升 L2 reuse |
-| 6 | TMA/MMA/epilogue 三角色、M-wave、TMA Store | 计算与写回重叠 |
-| 7 | cluster 两 CTA 计算不同 tile | 消除 2SM 重复计算 |
-| 8 | swizzled CD、ASAP `tmem_empty` | 减少 bank conflict，尽早归还 TMEM |
-| 9 | `256×256` tile、4 stage、descriptor shuffle、256-thread TMEM release | 与 DeepGEMM 的大矩阵路径接近 |
+| TMA Load | 拷贝完成产生 `complete_tx(bytes)`，结合 arrival 计数 | MMA 的 `full_bar` |
+| UMMA | 显式 commit 为此前操作建立完成点，完成后 arrival | TMA 的 `empty_bar` 或 epilogue 的 `tmem_full_bar` |
 
-性能不是由某一条 UMMA 指令单独决定的。Level 9 的核心是让四条数据通路各自连续工作：TMA Load、Tensor Core、TMEM epilogue、TMA Store；barrier/fence 只建立最小必要依赖。
+Commit 本身不阻塞发射线程；等待发生在消费这些通知的位置。
 
-## 5. 附录：descriptor、helper 与 host launch
+### Epilogue：按 chunk 搬出结果，再交还 TMEM
 
-### 5.1 UMMA 的两个 descriptor
+Epilogue 的 128 个线程先等待完整 tile 的 UMMA 累加完成。它们按 `w=0,1`、每个 wave 内 `s=0,1,2,3` 的顺序处理 8 个 $[128,64]$ chunk。**每个 chunk 搬到 CD SMEM 后就发出对应 Store，边搬边写回。**
+
+```cpp
+const uint32_t local_tid = threadIdx.x - 128;
+const uint32_t epi_warp = local_tid / 32;
+uint32_t tma_store_stage = 0;
+```
+
+这三个变量在 epilogue 的 persistent loop 外定义。每个 tile 开始时，用与 MMA 相同的 tile 序号求 `accum_idx`、`accum_phase`，再等待结果：
+
+```cpp
+barrier_wait(tmem_full_bar[accum_idx], accum_phase);
+tcgen05_fence_after();
+```
+
+**先取得可覆盖的 CD stage。** 以下片段位于 `w`、`s` 两层循环内。只有负责 Store 的线程等待自己的 bulk groups，然后通过 named barrier 让其余 epilogue 线程一起继续：
+
+```cpp
+if (epi_warp == 0 && elect_one())
+    tma_store_wait<NUM_TMA_STORE_STAGES - 1>();
+named_barrier_sync(NUM_EPILOGUE_THREADS, EPILOGUE_BAR_ID);
+
+uint32_t smem_stage_base = static_cast<uint32_t>(
+    __cvta_generic_to_shared(
+        smem_cd_base + tma_store_stage * SMEM_CD_PER_STAGE));
+```
+
+`wait_group<1>` 最多保留一个较新的未完成 group。由于 CD0、CD1 交替使用，准备覆盖 CD0 时，它此前对应的较老 Store 已完成，CD1 的较新 Store 可以仍在进行。若较老 Store 尚未完成，当前 chunk 的 TMEM 读取也会被这次等待推迟。
+
+**读取 TMEM，转换并按 swizzle 写入 SMEM。** 一次 `tmem_load_8x` 为每线程取出 8 个 FP32；调用 `tmem_load_fence()` 等寄存器结果可用后，再转成 8 个 BF16、打包到四个 32-bit 寄存器。每个 chunk 沿 64 列重复 8 次：
+
+```cpp
+for (uint32_t i = 0; i < STORE_BLOCK_N / ELEMS_PER_BANK_GROUP; ++i) {
+    uint32_t tmem_col = accum_idx * NUM_M_WAVES * BLOCK_N
+        + w * BLOCK_N + s * STORE_BLOCK_N + i * ELEMS_PER_BANK_GROUP;
+    uint32_t r0, r1, r2, r3, r4, r5, r6, r7;
+    tmem_load_8x(tmem_col, r0, r1, r2, r3, r4, r5, r6, r7);
+    tmem_load_fence();
+    uint32_t p0 = pack_bf16(r0, r1);
+    uint32_t p1 = pack_bf16(r2, r3);
+    uint32_t p2 = pack_bf16(r4, r5);
+    uint32_t p3 = pack_bf16(r6, r7);
+    uint32_t swizzled_col = i ^ (local_tid % BANK_GROUPS_PER_SWIZZLE);
+    uint32_t smem_addr = smem_stage_base
+        + local_tid * SWIZZLE_CD_BYTES + swizzled_col * BANK_GROUP_BYTES;
+    st_shared_128(smem_addr, p0, p1, p2, p3);
+}
+```
+
+这里 `ELEMS_PER_BANK_GROUP=8`、`BANK_GROUP_BYTES=16`、`SWIZZLE_CD_BYTES=128`。XOR 改变不同输出行中 16-byte 组的落点，以匹配 TMA descriptor 的 128-byte swizzle，并减少 bank conflict。它重排的是 CD SMEM 地址，输出矩阵的逻辑列序保持不变。
+
+**最后一个 chunk 读完，立即通知 TMEM 可以复用。** 此时前七个 chunk 的 Store 已经发出，最后一个 chunk 的数据也已离开 TMEM。每个读取线程对 leader 的 `tmem_empty_bar` 做一次 arrival，两个 CTA 共 256 次：
+
+```cpp
+if (w == NUM_M_WAVES - 1 && s == NUM_STORES - 1) {
+    tcgen05_fence_before();
+    barrier_arrive_cluster(tmem_empty_bar[accum_idx], 0);
+}
+__syncwarp();
+```
+
+`fence_before` 把本线程此前的 tcgen05 读取排在同步通知之前。下一 tile 的 UMMA 只需等这些读取全部结束，就能覆盖 TMEM；旧 tile 的 Global Store 可以尚未结束。
+
+**发布 CD SMEM 数据并发出 Store。** 每个 chunk 都执行以下片段，最后一个 chunk 也一样。Proxy fence 让普通线程写出的 SMEM 数据对 TMA async proxy 可见，named barrier 则确保全部 128 行都已经填好。
+
+```cpp
+tma_store_fence();
+named_barrier_sync(NUM_EPILOGUE_THREADS, EPILOGUE_BAR_ID);
+if (epi_warp == 0 && elect_one()) {
+    const int32_t n_idx = n_block * BLOCK_N + s * STORE_BLOCK_N;
+    const int32_t m_idx = m_block * BLOCK_M + w * WAVE_BLOCK_M;
+    tma_store_2d(smem_cd_base + tma_store_stage * SMEM_CD_PER_STAGE,
+                 &tma_d, n_idx, m_idx);
+    tma_store_commit();
+}
+tma_store_stage = (tma_store_stage + 1) % NUM_TMA_STORE_STAGES;
+```
+
+TMA Store 从 SMEM 取数据，所以这条写回路径需要经过寄存器和 CD SMEM。两块 CD 缓冲使线程填充与较早的 Store 有机会重叠；归还 TMEM 又允许下一 tile 的 Tensor Core 计算与写回尾部重叠。
+
+<BlackwellGemmDiagram view="overlap" />
+
+单个 TMEM accumulator stage 带来的限制是：旧 tile 的 TMEM 读取完成前，下一 tile 不能写这块 TMEM。重叠发生在归还之后的计算与写回之间；CD Store 若阻塞了最后一批读取，也会推迟归还。
+
+### 排空流水线与释放资源
+
+最后一个 tile 之后，没有“下一 tile 开始时”的等待来保护资源。MMA 分支因此补等最后一轮 `tmem_empty`；epilogue 的 Store 发射线程等待全部 Store 完成。它们分别保护 TMEM 生命周期和最终输出写回。
+
+```cpp
+// MMA 分支退出 persistent loop 后
+int last_iter = scheduler.current_iter - 1;
+if (last_iter >= 0) {
+    uint32_t li = last_iter % NUM_EPILOGUE_STAGES;
+    uint32_t lp = (last_iter / NUM_EPILOGUE_STAGES) & 1;
+    barrier_wait(tmem_empty_bar[li], lp);
+}
+```
+
+```cpp
+// Epilogue 分支退出 persistent loop 后
+if (epi_warp == 0 && elect_one())
+    tma_store_wait<0>();
+```
+
+随后所有角色回到共同的清理路径。CTA 内先集合，再进行 cluster 同步，最后由两个 CTA 的 warp 2 协作释放 TMEM：
+
+```cpp
+__syncthreads();
+cluster_sync();
+if (warp_idx == 2)
+    tmem_dealloc_2sm(0, TMEM_COLS);
+```
+
+## 优化取舍与性能范围
+
+### 从 Level 2 到 Level 9 留下了什么
+
+不同 Level 用于逐步引入机制。阅读最终实现时，保留下面这些差异即可；Level 9 的代码解释只使用当前配置。
+
+| Level | 关键变化 | 对最终实现的作用 |
+|---|---|---|
+| 2 | A/B SMEM `full/empty` 与 2SM 完成通知 | 建立输入缓冲交接 |
+| 3 | TMA/MMA 各自独立循环 | 让加载与计算按各自进度推进 |
+| 4 | TMEM→SMEM 后合并写回 | 重排输出数据 |
+| 5 | Persistent scheduler、2D swizzle | 多 tile 复用 CTA，改善 B 的 L2 复用 |
+| 6 | 三角色、M-wave、TMA Store | 将计算、结果搬出与写回分工 |
+| 7 | 两 CTA 计算不同输出 tile | 避免重复计算相同结果 |
+| 8 | Swizzled CD、提前通知 `tmem_empty` | 改善输出访问，提前归还 TMEM |
+| 9 | 大 tile、4 输入 stage、descriptor shuffle、256 次读取完成通知 | 在容量限制下协调输入、累加与输出路径 |
+
+Level 9 把 tile 扩大到 $256\times256$，减少需要调度的 tile 数，但也占用了全部 512 个 TMEM column，因此只保留一个 accumulator stage。它通过 CD 双缓冲和提前归还 TMEM 获得部分跨 tile 重叠，不能把前一版本的 TMEM double buffering 解释直接沿用过来。
+
+### 性能数字对应哪些条件
+
+同版本 [Level 9 README](https://github.com/KnowingNothing/MatmulTutorial/blob/69c6886b93c3d569f1ba49185615c7fce9f19df0/examples/matmul/this-sm100/level9/README.md#performance-results-gb200-bf16) 报告 GB200、BF16 的结果。下表中的比值均为作者列出的本实现吞吐除以 DeepGEMM 吞吐：
+
+| M | N | K | 本实现 TFLOPS | DeepGEMM TFLOPS | 比值 |
+|---:|---:|---:|---:|---:|---:|
+| 4096 | 4096 | 4096 | 1559 | 1660 | 0.94 |
+| 6144 | 6144 | 6144 | 1590 | 1512 | 1.05 |
+| 8192 | 8192 | 8192 | 1480 | 1499 | 0.99 |
+| 10240 | 10240 | 10240 | 1425 | 1500 | 0.95 |
+| 12288 | 12288 | 12288 | 1463 | 1466 | 1.00 |
+| 4096 | 576 | 7168 | 497 | 964 | 0.52 |
+| 4096 | 4096 | 7168 | 1084 | 1398 | 0.78 |
+
+“约 98%”对应前五个方阵测量点的平均比值。后两行展示固定 tile 在其他 shape 上的局限；作者将部分差距归因于 DeepGEMM 按 shape 选择不同配置。整体对比同时改变了多项设计，不能据此给某一项优化分配独立加速比。
+
+> README 的概括范围与表内部分数字存在出入，本文保留具体测量点。表中结果也不能替代边缘 shape 的正确性检查；本文新增的 scheduler 条件来自索引推导。
+
+## 附录：descriptor、helper 与 host launch
+
+### UMMA 的两个 descriptor
 
 SMEM descriptor：
 
@@ -829,7 +568,7 @@ make_instr_desc(uint32_t M, uint32_t N) {
 
 这里 `idesc = make_instr_desc(256,256)`。K-step 的 16 来自所选 `kind::f16` UMMA 形式和本算子的 `UMMA_K=16` 循环组织，不是通过这段 builder 的 M/N field 传入。
 
-### 5.2 TMA tensor map 的创建
+### TMA tensor map 的创建
 
 ```cpp
 static void create_tma_desc(
@@ -867,7 +606,7 @@ create_tma_desc(&tma_d, D, N, M, STORE_BLOCK_N, STORE_BLOCK_M,
 | B load | `(K,N)` view | `(64,128)` = 16 KiB/CTA |
 | D store | `(N,M)` view | `(64,128)` = 16 KiB |
 
-### 5.3 关键 helper 的高层含义
+### 关键 helper 的高层含义
 
 | Helper | 高层作用 |
 |---|---|
@@ -886,14 +625,12 @@ create_tma_desc(&tma_d, D, N, M, STORE_BLOCK_N, STORE_BLOCK_M,
 
 特别注意 2SM TMA helper 的两个地址：
 
-```text
-SMEM destination：保持调用 CTA 的本地地址
-completion barrier：通过 peer-bit/mapping 路由到 leader CTA
-```
+- **SMEM destination**：保持调用 CTA 的本地地址。
+- **Completion barrier**：通过 peer-bit/mapping 路由到 leader CTA。
 
 若把 peer mask 错误地应用到 destination，数据会被写进错误 CTA 的 SMEM。
 
-### 5.4 Launch 为什么是 persistent cluster kernel
+### Launch 为什么是 persistent cluster kernel
 
 ```cpp
 uint32_t num_tiles = num_m_blocks * num_n_blocks;
@@ -913,4 +650,4 @@ attrs[0].id = cudaLaunchAttributeClusterDimension;
 attrs[0].val.clusterDim = {CLUSTER_SIZE, 1, 1};
 ```
 
-grid 只提供常驻工作者，不是一 tile 一 CTA。每个 CTA 在 `TileScheduler` 的 while-loop 中处理多个 tile；TMEM 和 barrier 只初始化一次，phase 跨 tile 连续推进。
+grid 提供数量受限的常驻 CTA。每个 CTA 在 `TileScheduler` 的 while-loop 中处理多个 tile；TMEM 和 barrier 只初始化一次，phase 跨 tile 连续推进。

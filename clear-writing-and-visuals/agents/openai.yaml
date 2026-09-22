@@ -1,0 +1,4 @@
+interface:
+  display_name: "清晰写作与图示表达"
+  short_description: "组织说明性文档的内容与详略，审阅叙述和语言，并设计清楚忠实的图表"
+  default_prompt: "使用 $clear-writing-and-visuals，根据读者和目的组织这份文档，检查内容取舍、叙述、语言与图示表达。"

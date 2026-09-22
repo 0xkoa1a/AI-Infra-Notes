@@ -6,10 +6,14 @@ import "katex/dist/katex.min.css"
 import EPLoadBalancingMap from "./components/diagrams/EPLoadBalancingMap.vue"
 import FlashAttentionV4Diagram from "./components/diagrams/FlashAttentionV4Diagram.vue"
 import CriticalPathTimeline from "./components/diagrams/CriticalPathTimeline.vue"
+import ComFuseDiagram from "./components/diagrams/ComFuseDiagram.vue"
+import MPKDiagram from "./components/diagrams/MPKDiagram.vue"
+import BlackwellGemmDiagram from "./components/diagrams/BlackwellGemmDiagram.vue"
 import DeepEPBufferTransform from "./components/diagrams/DeepEPBufferTransform.vue"
 import DeepEPDedupExplorer from "./components/diagrams/DeepEPDedupExplorer.vue"
 import DeepEPHybridPipeline from "./components/diagrams/DeepEPHybridPipeline.vue"
 import DeepEPPathExplorer from "./components/diagrams/DeepEPPathExplorer.vue"
+import DiTDiagram from "./components/diagrams/DiTDiagram.vue"
 import MMDiTDiagram from "./components/diagrams/MMDiTDiagram.vue"
 import MoonEPBalanceIterations from "./components/diagrams/MoonEPBalanceIterations.vue"
 import MoonEPWeightLayout from "./components/diagrams/MoonEPWeightLayout.vue"
@@ -57,12 +61,16 @@ defineMermaidConfig({
 export default defineClientConfig({
   enhance({ app }) {
     app.component("CriticalPathTimeline", CriticalPathTimeline)
+    app.component("ComFuseDiagram", ComFuseDiagram)
+    app.component("MPKDiagram", MPKDiagram)
+    app.component("BlackwellGemmDiagram", BlackwellGemmDiagram)
     app.component("DeepEPBufferTransform", DeepEPBufferTransform)
     app.component("DeepEPDedupExplorer", DeepEPDedupExplorer)
     app.component("DeepEPHybridPipeline", DeepEPHybridPipeline)
     app.component("DeepEPPathExplorer", DeepEPPathExplorer)
     app.component("EPLoadBalancingMap", EPLoadBalancingMap)
     app.component("FlashAttentionV4Diagram", FlashAttentionV4Diagram)
+    app.component("DiTDiagram", DiTDiagram)
     app.component("MMDiTDiagram", MMDiTDiagram)
     app.component("MoonEPBalanceIterations", MoonEPBalanceIterations)
     app.component("MoonEPWeightLayout", MoonEPWeightLayout)
