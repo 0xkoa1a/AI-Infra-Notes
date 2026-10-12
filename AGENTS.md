@@ -23,9 +23,14 @@
 - Keep exact comparisons and citations in Markdown even when a Vue component provides the visual intuition.
 - Use a timeline figure for CUDA critical-path analysis when execution overlap is part of the explanation. Divide lanes vertically by the actual hardware resource or execution engine (for example, CUDA Core, Tensor Core, TMA, or communication), and place operations horizontally by time. Lane names, count, ordering, and stage labels must come from the analyzed implementation; do not promote one article's resource layout into a repository-wide fixed template. When operations can overlap but contend for a shared resource, show the requested conservative ordering and annotate the possible overlap plus the contention. `<CriticalPathTimeline />` is the current reusable EP implementation of this pattern; its labels and captions are configurable, while future resource layouts may require a dedicated variant.
 
-## Validation
+## Git workflow
 
-- Run `make check`, `pnpm run typecheck`, `pnpm test`, `pnpm run docs:build`, and `git diff --check` for site changes.
-- When portable export code or shared page chrome changes, run `pnpm run export:smoke` and open a generated file through `file://`.
-- Inspect the rendered target page in the browser, including light and dark modes when semantic colors change.
-- After validation, run `make clean` so generated site output and VuePress caches are not left behind.
+- After completing user-requested changes, commit and push the task changes automatically. The user has authorized this workflow for this repository.
+- Stage only the task changes and their required dependencies. Preserve unrelated uncommitted changes, including when a file contains changes from several tasks.
+- Use a normal push; do not force-push or rewrite shared history.
+
+## Validation and live preview
+
+- The user runs `make preview` while reading and editing. Preserve that process and its generated output and caches.
+- Do not run builds, tests, browser checks, `make check`, `git diff --check`, or cache cleanup unless the user explicitly requests them.
+- For document changes, reread the changed prose and diagram source for logic, language, citations, and consistency. State that rendered-page validation was not performed.

@@ -19,6 +19,7 @@ import MoonEPBalanceIterations from "./components/diagrams/MoonEPBalanceIteratio
 import MoonEPWeightLayout from "./components/diagrams/MoonEPWeightLayout.vue"
 import MoonEPZeroCopyFlow from "./components/diagrams/MoonEPZeroCopyFlow.vue"
 import RankLoadDistribution from "./components/diagrams/RankLoadDistribution.vue"
+import KernelResourceCapacity from "./components/diagrams/KernelResourceCapacity.vue"
 
 defineMermaidConfig({
   flowchart: {
@@ -76,5 +77,6 @@ export default defineClientConfig({
     app.component("MoonEPWeightLayout", MoonEPWeightLayout)
     app.component("MoonEPZeroCopyFlow", MoonEPZeroCopyFlow)
     app.component("RankLoadDistribution", RankLoadDistribution)
+    app.component("KernelResourceCapacity", KernelResourceCapacity)
   },
 })
