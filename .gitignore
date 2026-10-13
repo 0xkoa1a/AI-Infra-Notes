@@ -10,3 +10,6 @@ _exports/
 notes/.vuepress/.cache/
 notes/.vuepress/.temp/
 pnpm-debug.log*
+
+# 本地精读用的上游源码
+DeepGEMM/

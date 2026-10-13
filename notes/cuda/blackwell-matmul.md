@@ -7,7 +7,7 @@ order: 1
 
 这份 Level 9 实现让不同 warp 分别负责输入加载、矩阵计算的发射和结果写回，并通过完成通知交接缓冲。**读懂它的关键，是弄清每份数据由谁持有、何时完成，以及何时允许下一轮覆盖同一块存储。**
 
-本文精读 [MatmulTutorial 的 Level 9 源码](https://github.com/KnowingNothing/MatmulTutorial/blob/69c6886b93c3d569f1ba49185615c7fce9f19df0/examples/matmul/this-sm100/level9/matmul.cu)，源码链接固定到 commit `69c6886`。下面的 C++ 片段保留实现中的控制关系，调整了断行并补充中文注释；未展开的指针设置和 helper 可对照原文件与文末附录。性能数字来自同版本作者报告，未在本文中复测。
+下面的 C++ 片段保留实现中的控制关系，调整了断行并补充中文注释；未展开的指针设置和 helper 可对照原文件与文末附录。性能数字来自同版本作者报告，未在本文中复测。
 
 ## 从普通 GEMM 到 Blackwell 的执行路径
 
@@ -549,8 +549,6 @@ Level 9 把 tile 扩大到 $256\times256$，减少需要调度的 tile 数，但
 
 ## 性能与适用范围
 
-同版本 [Level 9 README](https://github.com/KnowingNothing/MatmulTutorial/blob/69c6886b93c3d569f1ba49185615c7fce9f19df0/examples/matmul/this-sm100/level9/README.md#performance-results-gb200-bf16) 报告 GB200、BF16 的结果。下表中的比值均为作者列出的本实现吞吐除以 DeepGEMM 吞吐：
-
 | M | N | K | 本实现 TFLOPS | DeepGEMM TFLOPS | 比值 |
 |---:|---:|---:|---:|---:|---:|
 | 4096 | 4096 | 4096 | 1559 | 1660 | 0.94 |
@@ -563,7 +561,6 @@ Level 9 把 tile 扩大到 $256\times256$，减少需要调度的 tile 数，但
 
 “约 98%”对应前五个方阵测量点的平均比值。后两行展示固定 tile 在其他 shape 上的局限；作者将部分差距归因于 DeepGEMM 按 shape 选择不同配置。整体对比同时改变了多项设计，不能据此给某一项优化分配独立加速比。
 
-> README 的概括范围与表内部分数字存在出入，本文保留具体测量点。表中结果也不能替代边缘 shape 的正确性检查；本文新增的 scheduler 条件来自索引推导。
 
 ## 附录：descriptor、helper 与 host launch
 

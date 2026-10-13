@@ -8,7 +8,10 @@ import FlashAttentionV4Diagram from "./components/diagrams/FlashAttentionV4Diagr
 import CriticalPathTimeline from "./components/diagrams/CriticalPathTimeline.vue"
 import ComFuseDiagram from "./components/diagrams/ComFuseDiagram.vue"
 import MPKDiagram from "./components/diagrams/MPKDiagram.vue"
+import MPKTwoGpuMatMul from "./components/diagrams/MPKTwoGpuMatMul.vue"
+import MPKTwoGpuFlow from "./components/diagrams/MPKTwoGpuFlow.vue"
 import BlackwellGemmDiagram from "./components/diagrams/BlackwellGemmDiagram.vue"
+import MegaMoEDiagram from "./components/diagrams/MegaMoEDiagram.vue"
 import DeepEPBufferTransform from "./components/diagrams/DeepEPBufferTransform.vue"
 import DeepEPDedupExplorer from "./components/diagrams/DeepEPDedupExplorer.vue"
 import DeepEPHybridPipeline from "./components/diagrams/DeepEPHybridPipeline.vue"
@@ -64,7 +67,10 @@ export default defineClientConfig({
     app.component("CriticalPathTimeline", CriticalPathTimeline)
     app.component("ComFuseDiagram", ComFuseDiagram)
     app.component("MPKDiagram", MPKDiagram)
+    app.component("MPKTwoGpuMatMul", MPKTwoGpuMatMul)
+    app.component("MPKTwoGpuFlow", MPKTwoGpuFlow)
     app.component("BlackwellGemmDiagram", BlackwellGemmDiagram)
+    app.component("MegaMoEDiagram", MegaMoEDiagram)
     app.component("DeepEPBufferTransform", DeepEPBufferTransform)
     app.component("DeepEPDedupExplorer", DeepEPDedupExplorer)
     app.component("DeepEPHybridPipeline", DeepEPHybridPipeline)
