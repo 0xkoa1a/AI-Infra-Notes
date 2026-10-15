@@ -5,365 +5,122 @@ order: 2
 
 # Tensor Parallelism 与 Sequence Parallelism
 
-## Tensor Parallelism
+**TP 把线性层的计算分给多张 GPU；SP 进一步把 LayerNorm、Residual 等区域的激活按 token 分片，减少复制保存与重复计算。** 两者通过 AllGather 和 ReduceScatter 衔接。
 
-Megatron 风格 TP 的关键设计，就是将 Column Parallel Linear 与 Row Parallel Linear 成对使用，从而把两个线性层之间的中间激活保持为分片状态，只在必要的位置执行归约。
+本文采用经典 Megatron 的切分方式，先看 Column–Row 配对，再看 SP 如何改变激活分布。通信统计均以前向过程、一个 TP 组为范围。[Megatron-LM](https://arxiv.org/abs/1909.08053)、[Sequence Parallelism](https://arxiv.org/html/2205.05198v1#S4.SS2.SSS2)
 
-***
+## Tensor Parallelism：让中间结果保持分片
 
-### 统一符号
+将 batch 与 sequence 两个维度展平，输入记为 $X\in\mathbb{R}^{T\times H}$。下文使用以下符号：
 
-把前导 batch x sequence 维度展平。
+| 符号 | 含义 |
+|---|---|
+| $T=B\times S$ | token 总数；$B$ 为 batch size，$S$ 为序列长度 |
+| $H$ | 隐藏维度 |
+| $I$ | 线性层的输出维度；在两层 MLP 中表示中间维度 |
+| $p$ | TP 组中的 Rank 数；图中每个 Rank 对应一张 GPU |
 
-设输入隐藏状态为：
+以下假设被切分的维度能被 $p$ 整除。
 
-$$X\in\mathbb{R}^{M\times H}$$
+### Column 与 Row 分别切什么
 
-其中：
+对于线性层 $Y=XW$，权重 $W$ 的形状为 $[H,I]$。
 
-* $M$ 表示参与当前线性层计算的 token 数， $M=B\times S$；
-* $B$ 是 batch size；
-* $S$ 是序列长度；
-* $H$ 是 hidden size。
+**Column Parallel 沿权重的输出列切分。** 每卡持有完整输入，以及部分输出列的权重，因此得到不同输出位置的结果：
 
-线性层权重为：
+$$
+W=[W_0,\ldots,W_{p-1}],\qquad Y_r=XW_r.
+$$
 
-$$W\in\mathbb{R}^{H\times I}$$
+其中，$W_r$ 为 $[H,I/p]$，$Y_r$ 为 $[T,I/p]$。数学上，完整输出为 $Y=[Y_0,\ldots,Y_{p-1}]$；下一层若能直接消费这些分片，就无需实际拼接或 AllGather。
 
-输出为：
+**Row Parallel 沿权重的输入行切分。** 输入也沿特征维度作对应切分，每卡计算相同输出位置的一部分求和贡献：
 
-$$Y=XW\in\mathbb{R}^{M\times I}$$
+$$
+X=[X_0,\ldots,X_{p-1}],\qquad
+W=\begin{bmatrix}W_0\\\vdots\\W_{p-1}\end{bmatrix},\qquad
+Y^{(r)}=X_rW_r.
+$$
 
-假设有 $p$ 个 Rank。
+其中，$X_r$ 为 $[T,H/p]$，$W_r$ 为 $[H/p,I]$。各卡的 $Y^{(r)}$ 都是 $[T,I]$，但数值尚不完整，需要逐元素求和：
 
-***
+$$
+Y=\sum_{r=0}^{p-1}Y^{(r)}.
+$$
 
-### Column Parallel Linear
+普通 TP 用 AllReduce 完成这次求和，并让每卡获得完整 $Y$。下标 $Y_r$ 表示不同位置的分片，上标 $Y^{(r)}$ 表示同一组位置的局部贡献。
 
-#### 切分方式
+### 两层 MLP 为什么可以配对
 
-将权重 $W$ 沿输出维度 $I$ 切成 $p$ 份：
+MLP 先将隐藏维度从 $H$ 扩展到 $I$，经过逐元素激活 $\sigma$，再投影回 $H$。两层权重分别为 $W_1\in\mathbb{R}^{H\times I}$、$W_2\in\mathbb{R}^{I\times H}$：
 
-$$W=[W_0,W_1,\ldots,W_{p-1}]$$
+$$
+Z=\sigma(XW_1),\qquad Y=ZW_2.
+$$
 
-其中：
+<TensorParallelMatMul />
 
-$$W_r\in\mathbb{R}^{H\times (I/p)}$$
+> 图中取 $T=4$、$H=4$、$I=8$。蓝色与橙色对应两卡的分片；省略 Bias。
 
-每个 Rank 都持有完整输入 $X$，但只持有一部分权重：
+**第一层输出的列分片，正好对应第二层需要的输入分片。** 逐元素激活也可以本地完成，因此两层之间无需收集完整 $Z$。这个例子最终只在第二层之后归约，而中间激活始终保持分片。
 
-```text
-Rank 0：W0
-Rank 1：W1
-...
-Rank p-1：Wp-1
+### Attention 中怎样使用同一配对
+
+多头注意力的各个 head 可以独立计算。QKV Projection 使用 Column Parallel，将不同 heads 分给各卡；每卡保留全部 token，在自己的 heads 上完成 Attention。拼接后的 head 特征对应 Output Projection 的输入维度，因此后者使用 Row Parallel，最后归约局部贡献。
+
+> 此处按普通多头注意力、头数可均分的情形说明。LayerNorm 的 token 独立性与 Attention 的 head 独立性不同：一个 Attention head 仍需要访问相应的序列上下文。
+
+经典 Transformer 层中，Attention 与 MLP 各有一组配对。下面只标通信边界：
+
+```mermaid
+flowchart TB
+    A["Attention · TP"] --> B["AllReduce"]
+    B --> C["Residual / LayerNorm"]
+    C --> D["MLP · TP"]
+    D --> E["AllReduce"]
 ```
 
-第 $r$ 个 Rank 计算：
+采用门控 MLP 时，Gate 与 Up 两路按对应的中间特征切分，逐元素相乘后交给 Down Projection。**经典配对的前向过程每层有两次 AllReduce。** 若统计训练的前向与反向，则通常共四次；这里不包含数据并行的梯度通信。
 
-$$Y_r=XW_r$$
+## Sequence Parallelism：减少非 TP 区域的激活复制
 
-其中：
+### 为什么按 token 切分
 
-$$Y_r\in\mathbb{R}^{M\times I/p}$$
+普通 TP 在 Row Parallel 后执行 AllReduce，每卡都持有完整输出。接下来的 Residual、LayerNorm、Dropout 等操作，会在各卡重复处理这些激活。
 
-完整输出为：
+这些操作可以按 token 分工。尤其 LayerNorm 虽然要归约特征维度，但**每卡只要保留一个 token 的完整 $H$ 个特征，就能独立完成该 token 的归一化**。Residual 的两路输入采用相同 token 分片时，也可以本地相加。
 
-$$Y=[Y_0,Y_1,\ldots,Y_{p-1}]$$
+SP 因而让各卡在这些区域持有 $[T/p,H]$ 的激活。下图以四个 token、每个 token 四个特征为例；可切换查看它与 TP Attention 子层的衔接。
 
-不同 Rank 计算的是不同输出列，因此称为 Column Parallel Linear。
+<SequenceParallelLayout />
 
-***
+### AllGather 与 ReduceScatter 为什么放在这里
 
-### Row Parallel Linear
+在本文的 Column–Row 实现中，QKV 投影需要完整输入：先用 **AllGather** 收齐 token，再由各卡计算自己的 heads。SP 的 token 分片不会一直保持到 Attention 内部。
 
-#### 切分方式
+Output Projection 后，每卡又产生 $[T,H]$ 的局部贡献。此时用 **ReduceScatter** 同时完成跨卡求和与按 token 分发，使输出恢复为每卡 $[T/p,H]$。它直接产生已归约的 token 分片，随后可在本地执行 Residual、LayerNorm 等操作。[SP 原论文的推导](https://arxiv.org/html/2205.05198v1#S4.SS2.SSS2)
 
-Row Parallel Linear 将输入 $X$ 沿 hidden dimension 切分：
+**SP 节省的是这些区域的激活保存和重复计算。** AllGather 后仍会出现完整输入，不能将任意时刻的激活或整个程序的峰值显存都直接视为原来的 $1/p$。
 
-$$X=[X_0,X_1,\ldots,X_{p-1}]$$
+## 通信量：相同字节数不等于相同耗时
 
-其中：
+设每个激活元素占 $b$ 字节，一份完整隐藏状态的大小为 $N=THb=BSHb$。采用理想 Ring 模型，统计每个 Rank 的发送字节数：
 
-$$X_r\in\mathbb{R}^{M\times H/p}$$
+| 一次 collective | 每 Rank 发送量 |
+|---|---|
+| ReduceScatter | $\frac{p-1}{p}N$ |
+| AllGather | $\frac{p-1}{p}N$ |
+| AllReduce | $2\frac{p-1}{p}N$ |
 
-权重 $W$ 沿输入维度切分：
+> Ring AllReduce 包含 ReduceScatter 与 AllGather 两个阶段，各执行 $p-1$ 轮；每轮发送 $N/p$ 字节。接收量相同，表中不将发送与接收相加。
 
-$$W=\begin{bmatrix}W_0 \\ W_1 \\ \vdots \\ W_{p-1}\end{bmatrix}$$
+普通 TP 在两组配对的末尾各执行一次 AllReduce。TP+SP 则在每组前后使用 AllGather 与 ReduceScatter，让两组之间的激活保持 token 分片。每层前向的发送量分别为：
 
-其中：
+$$
+V_{\mathrm{TP}}=2\times2\frac{p-1}{p}N,\qquad
+V_{\mathrm{TP+SP}}=2\left(\frac{p-1}{p}N+\frac{p-1}{p}N\right).
+$$
 
-$$W_r\in\mathbb{R}^{H/p\times I}$$
+因此，**在这一统计范围与 Ring 字节数模型下，两者发送量相同。** ReduceScatter 与下一子层前的 AllGather 被 LayerNorm 等本地操作隔开，改变了完整激活的保存范围。
 
-第 $r$ 个 Rank 计算：
-
-$$Y^{(r)}=X_rW_r$$
-
-每个 $Y^{(r)}$ 都具有完整输出形状：
-
-$$Y^{(r)}\in\mathbb{R}^{M\times I}$$
-
-但是它只是完整输出的 partial sum。
-
-***
-
-### Column Parallel 和 Row Parallel 恰好可以配对
-
-考虑一个两层 MLP：
-
-$$Y=\sigma(XW_1)W_2$$
-
-```text
-完整输入 X
-    │
-    ▼
-Column Parallel W1
-    │
-各 Rank 得到不同 Intermediate 分片
-    │
-    ▼
-本地 Activation
-    │
-    ▼
-Row Parallel W2
-    │
-各 Rank 得到完整输出形状的 partial sum
-    │
-    ▼
-AllReduce
-    │
-    ▼
-完整输出 Y
-```
-
-Column Parallel Linear 的输出分片正好可以作为 Row Parallel Linear 的输入分片，不需要通信。
-
-***
-
-### Attention 中的 TP
-
-Multi-Head Self Attention 可以分为 QKV Projection、Attention、Output Projection 三个阶段。其中 Attention 中每个 head 的计算是独立的，天然适合 Column Parallel。
-
-将 Q、K、V 按照 head 维度切分，每个 rank 负责在若干个 head 上进行 QKV Projection 和 Attention 计算，得到局部输出 $O_r$（包含全部的序列和部分的 heads）。Output Projection 为：
-
-$$Y=OW_O$$
-
-输入 $O$ 已沿 head 维度切分，因此 $W_O$ 自然使用 Row Parallel。
-
-最后将每个 rank 得到的 partial sum 归约，得到完整输出 $Y$。
-
-***
-
-
-### 每个 Transformer Layer 中有多少次 TP 通信
-
-经典 Megatron 风格 Transformer Layer 通常包含两组 Column–Row 配对：
-
-```text
-第一组：
-QKV Column Parallel
-→ Attention
-→ Output Row Parallel
-→ AllReduce
-
-第二组：
-Gate/Up Column Parallel
-→ Activation
-→ Down Row Parallel
-→ AllReduce
-```
-
-每层有两次 TP AllReduce。
-
-
-假设每个 Row Parallel 输出张量为：
-
-$$Y\in\mathbb{R}^{B\times S\times H}$$
-
-数据量为：
-
-$$N_Y=BSHb$$
-
-一次 Ring AllReduce 的每 Rank 发送量为：
-
-$$V_{\text{AR}}=2\frac{p-1}{p}BSHb$$
-
-> Ring AllReduce = ReduceScatter + AllGather
-> 每个 rank 每轮将自己负责的分片（大小为 BSHb / p）发送给下一个 rank，同时接收上一个 rank 的分片。经过 p-1 轮后，每个 rank 得到完整结果。
-
-两次相同大小的 AllReduce，则每层每 Rank 发送量近似为：
-
-$$V_{\text{TP, layer}}=4\frac{p-1}{p}BSHb$$
-
-***
-
-## Sequence Parallelism
-
-### 为什么普通 TP 仍然存在激活复制
-
-考虑普通 TP 中 Row Parallel Linear 的输出。
-
-每个 Rank 计算局部贡献：
-
-$$Y^{(r)}=X_rW_r$$
-
-然后执行 AllReduce：
-
-$$Y=\sum_{r=0}^{p-1}Y^{(r)}$$
-
-AllReduce 后，每个 Rank 都拥有完整 $Y$：
-
-```text
-Rank 0：完整 Y
-Rank 1：完整 Y
-...
-Rank p-1：完整 Y
-```
-
-接下来执行的操作可能包括：
-
-* Residual Add；
-* LayerNorm；
-* 其他逐元素算子。
-
-不同 token 之间通常彼此独立，但在普通 TP 中，每个 Rank 都会重复保存和计算完整激活。
-
-***
-
-### SP 的核心思想
-
-SP 将激活沿 token 维度切分。
-
-令：
-
-$$T=B\times S$$
-
-完整激活为：
-
-$$X\in\mathbb{R}^{T\times H}$$
-
-在 $p$ 个 Rank 上沿 token 维度切分：
-
-$$X=[X_0;X_1;\ldots;X_{p-1}]$$
-
-其中：
-
-$$X_r\in\mathbb{R}^{T/p\times H}$$
-
-执行 SP 后：
-
-```text
-Rank 0：前 1/p token
-Rank 1：第 2/p token
-...
-Rank p-1：最后 1/p token
-```
-
-每个 Rank 对自己的 token 子集执行：
-
-* LayerNorm；
-* Residual；
-* Dropout；
-* 逐元素运算。
-
-因为这些算子对每个 token 独立，所以不需要跨 Rank 通信。
-
-***
-
-### SP 如何与 TP 连接
-
-Sequence-Parallel 时，每个 rank 持有：
-- 部分 序列
-- 完整 hidden dimension
-
-进入 Tensor-Parallel 前，每个 rank 需要持有完整的 $X$。
-
-因此 SP -> TP 的过程包括一个 **AllGather**。
-
-经过一组 Column Parallel Linear + Row Parallel Linear 运算后，每个 Rank 得到完整输出形状的 partial sum：
-
-$$Y^{(r)}\in\mathbb{R}^{T\times H}$$
-
-普通 TP 会执行 AllReduce，让每个 Rank 都获得完整 $Y$。
-
-SP 则执行 **ReduceScatter**。每个 Rank 最终得到：
-
-$$Y_r\in\mathbb{R}^{T/p\times H}$$
-
-这样输出立即回到部分序列 + 完整 hidden dimension 的状态。
-
-
-### 一组 SP + TP 的完整过程
-
-以 Attention 子层为例：
-
-```text
-Sequence-Parallel 输入
-每 Rank：[T/p, H]
-        │
-        ▼
-AllGather
-        │
-每 Rank：[T, H]
-        │
-        ▼
-QKV Column Parallel
-        │
-每 Rank：全部 token，部分 Heads
-        │
-        ▼
-Local Attention
-        │
-        ▼
-Output Row Parallel
-        │
-每 Rank：[T, H] 的局部贡献
-        │
-        ▼
-ReduceScatter
-        │
-每 Rank：[T/p, H]
-        │
-        ▼
-本地 Residual / LayerNorm
-```
-
-
-***
-
-### SP + TP 的通信量
-
-普通 TP 中，一组 Row Parallel 输出执行一次 AllReduce：
-
-$$V_{\text{AllReduce}}=2\frac{p-1}{p}N$$
-
-SP 将其拆成：
-
-* 进入下一组 Column Parallel 前的 AllGather；
-* 当前 Row Parallel 后的 ReduceScatter。
-
-**因此和单纯 TP 相比，SP + TP 的通信量不变**。
-
-**但是大通信（AllReduce）被拆成了小通信（AllGather + ReduceScatter），更容易被计算掩盖**。
-
-***
-
-## 通信量总结
-
-令完整 hidden state 的数据量为：
-
-$$N=BSHb$$
-
-普通 TP 在 Attention Output Projection 和 MLP Down Projection 后各执行一次 Ring AllReduce：
-
-$$V_{\text{TP, layer}}=2\times2\frac{p-1}{p}N=4\frac{p-1}{p}N$$
-
-TP + SP 将每次 AllReduce 拆到相邻算子边界，改为一次 ReduceScatter 和下一子层前的一次 AllGather。一个 Transformer Layer 包含 Attention 与 MLP 两组：
-
-$$V_{\text{TP+SP, layer}}=2\left(\frac{p-1}{p}N+\frac{p-1}{p}N\right)=4\frac{p-1}{p}N$$
-
-因此，在理想 Ring 字节数模型下：
-
-$$V_{\text{TP+SP, layer}}=V_{\text{TP, layer}}$$
-
-SP 省下的是完整激活的复制保存和逐元素重复计算。
+通信耗时还受启动开销、带宽利用率与执行依赖影响。拆开后的 collective 能否与计算重叠，需要相应的实现和调度支持。SP 原论文也观察到，分开的 ReduceScatter 与 AllGather 合计可能比一次 AllReduce 更慢；其主要收益来自激活显存节省，以及由此减少的激活重计算需求。[论文第 6.2 节](https://arxiv.org/html/2205.05198v1#S6.SS2)

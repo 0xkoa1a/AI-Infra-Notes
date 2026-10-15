@@ -23,6 +23,8 @@ import MoonEPWeightLayout from "./components/diagrams/MoonEPWeightLayout.vue"
 import MoonEPZeroCopyFlow from "./components/diagrams/MoonEPZeroCopyFlow.vue"
 import RankLoadDistribution from "./components/diagrams/RankLoadDistribution.vue"
 import KernelResourceCapacity from "./components/diagrams/KernelResourceCapacity.vue"
+import TensorParallelMatMul from "./components/diagrams/TensorParallelMatMul.vue"
+import SequenceParallelLayout from "./components/diagrams/SequenceParallelLayout.vue"
 
 defineMermaidConfig({
   flowchart: {
@@ -84,5 +86,7 @@ export default defineClientConfig({
     app.component("MoonEPZeroCopyFlow", MoonEPZeroCopyFlow)
     app.component("RankLoadDistribution", RankLoadDistribution)
     app.component("KernelResourceCapacity", KernelResourceCapacity)
+    app.component("TensorParallelMatMul", TensorParallelMatMul)
+    app.component("SequenceParallelLayout", SequenceParallelLayout)
   },
 })
