@@ -5,9 +5,9 @@ order: 3
 
 # Ulysses Parallelism
 
-**Ulysses Parallelism（UP）沿序列分片激活，在 Attention 前后用 AllToAll 转换为 head 分片、再恢复序列分片。** 每卡因此可以在自己的 heads 上复用完整序列的单卡 Attention kernel。
+**纯 Ulysses Parallelism（UP）的前向顺序是：本地 QKV Projection → AllToAll → 本地 Attention → AllToAll → 本地 Output Projection。** 两次通信改变激活的分布，两个投影使用的权重始终在每卡完整复制。
 
-纯 UP 本身不切分线性层权重。若未组合其他参数分片方案，每卡仍持有完整参数，并对本地 token 执行投影、LayerNorm 和 MLP。[Ulysses 原论文](https://arxiv.org/html/2309.14509v2#S3.SS1)
+下文讨论未组合其他参数分片方案的纯 UP；LayerNorm 和 MLP 也在本地 token 上执行。[Ulysses 原论文](https://arxiv.org/html/2309.14509v2#S3.SS1)
 
 ## 动机：本地序列还不足以完成 Attention
 
@@ -15,7 +15,7 @@ order: 3
 
 UP 利用另一个独立性：不同 heads 可以分别计算。将任务重新按 head 分工，让每卡收齐自己负责的 heads 的全部 token，就能直接调用本地 Attention kernel。计算结束后，再按 token 将输出交回原卡。
 
-## 方法：在序列分片与 head 分片之间转换
+## 方法：沿完整前向看激活与权重
 
 下文以标准多头注意力（MHA）为例，假设序列长度与 head 数都可被并行度均分。
 
@@ -26,11 +26,11 @@ UP 利用另一个独立性：不同 heads 可以分别计算。将任务重新�
 | $H=N_hD_h$ | 隐藏维度 |
 | $p$ | UP 组中的 Rank 数；图中每个 Rank 对应一张 GPU |
 
-每卡从输入 $X_r\in\mathbb{R}^{B\times S/p\times H}$ 开始，本地投影生成 QKV。
-
 <UlyssesLayout />
 
-> 图取 $B=1$、$S=4$、$N_h=4$、$p=2$。每格代表一个 token 在一个 head 上的向量，省略内部的 $D_h$ 维；Q、K、V 使用相同的分发方式。
+> 图取 $B=1$、$S=4$、$N_h=4$、$D_h=1$、$p=2$，因此 $H=4$。QKV 的叠片代表三个同布局张量；X、Y 的灰色列表示隐藏特征。
+
+**QKV Projection：使用完整权重，处理本地 token。** 第 $r$ 卡从 $X_r\in\mathbb{R}^{B\times S/p\times H}$ 开始，使用完整的 $W_Q,W_K,W_V$ 生成 Q、K、V。图中将三份权重并排记为 $W_{\mathrm{QKV}}\in\mathbb{R}^{H\times3H}$。由于投影不依赖其他 token，这一步无需先 AllGather 输入；其输出包含本地 token 的全部 heads。
 
 **第一次 AllToAll 按 head 分发 QKV。** 源 Rank $r$ 把本地 heads 切为 $p$ 组，第 $j$ 组交给目标 Rank $j$。目标卡沿序列维度拼接各来源的这一组，得到可用于本地 Attention 的输入。每份发送块 $Q_{r\rightarrow j}$ 的形状为 $[B,S/p,N_h/p,D_h]$，K、V 同理。
 
@@ -42,16 +42,22 @@ $$
 
 这时所需上下文已经齐全，可以复用单卡 FlashAttention 等实现。
 
-**第二次 AllToAll 恢复输出 O 的序列分片。** 每卡按 token 将本地输出分发给原卡，目标卡沿 head 维度拼接。两次通信都属于前向过程，具体形状如下：
+**第二次 AllToAll：恢复输出 O 的序列分片。** 每卡按 token 将本地输出分发给原卡，目标卡沿 head 维度拼接。
+
+**Output Projection：使用完整权重，混合本地 token 的全部 heads。** 将恢复后的 O 的 head 维度展平为 $H$，第 $r$ 卡用完整 $W_O\in\mathbb{R}^{H\times H}$ 计算 $Y_r=\operatorname{concatHeads}(O_r)W_O$。不同 heads 的结果需要在这里共同参与投影，因此先恢复本地 token 的全部 heads，再执行此步。Y 继续按 token 分片，可交给本地 Residual、LayerNorm 和 MLP。
+
+整个前向中，各阶段主要激活的形状如下。表中省略了已经消费但可能因反向传播需要而保留的张量。
 
 | 数据位置 | 每卡形状 |
 |---|---|
+| QKV Projection 前的 X | $[B,S/p,H]$ |
 | 第一次 AllToAll 前的 Q、K、V | $[B,S/p,N_h,D_h]$ |
 | 第一次 AllToAll 后的 Q′、K′、V′ | $[B,S,N_h/p,D_h]$ |
 | 本地 Attention 输出 O′ | $[B,S,N_h/p,D_h]$ |
 | 第二次 AllToAll 后的 O | $[B,S/p,N_h,D_h]$ |
+| Output Projection 后的 Y | $[B,S/p,H]$ |
 
-AllToAll 做的是**重分发与拼接**。每卡在交换前后持有的单个张量元素数相同；恢复后的 O 已具有本地 token 的完整 head 特征，可继续执行 Output Projection、Residual、LayerNorm 和 MLP。[论文第 3.1 节](https://arxiv.org/html/2309.14509v2#S3.SS1)
+**两次 AllToAll 都在前向中重分发激活，权重不参与交换。** 每次交换前后，单个张量在每卡的元素数相同。[论文第 3.1 节](https://arxiv.org/html/2309.14509v2#S3.SS1)
 
 ## 通信量：只交换分片中的非本地部分
 
