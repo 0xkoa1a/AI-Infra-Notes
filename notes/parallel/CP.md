@@ -5,9 +5,11 @@ order: 7
 
 # Context Parallelism
 
-Context Parallelism（CP）的核心，是将完整序列分到多个 Rank，并让每个 Rank 始终只保存和计算自己的 Token。Linear、LayerNorm 和 MLP 都可以直接处理本地 Token；只有 Attention 需要让本地 Query 访问完整序列的 K 和 V。
+**Context Parallelism（CP）将序列分给多个 Rank，每卡负责一部分 token 的输出。** Linear、LayerNorm 和 MLP 都能直接处理本地 token；Attention 则需要访问远端、且由 mask 允许的 K、V。
 
-CP 描述的是沿 Context 维切分激活的并行方式，Ring Attention 则是 Attention 阶段交换 KV 的一种实现。CP 本身不切分权重；如果没有再组合 TP，每个 CP Rank 仍然持有完整模型参数。
+下文讨论未组合 TP 等参数分片方案的纯 CP，权重在每卡完整复制。Attention 采用 Ring 实现：**Q 和输出累积状态留在本卡，KV 逐轮流入；本地 Attention 完成后，直接执行 O Projection。** [Megatron Core 的 CP 说明](https://docs.nvidia.com/megatron-core/developer-guide/latest/user-guide/features/context_parallel.html)
+
+> CP 是沿序列维切分的并行方式，Ring 是其中一种通信实现。Megatron 也支持先 AllGather KV、Ulysses 式 AllToAll，以及分层组合。下文流程和通信量针对 Ring CP。[通信方式定义](https://docs.nvidia.com/megatron-core/developer-guide/latest/apidocs/core/core.transformer.transformer_config.html#megatron.core.transformer.transformer_config.TransformerConfig.cp_comm_type)
 
 ## 统一符号
 
@@ -17,14 +19,14 @@ $$X\in\mathbb{R}^{B\times S\times H}$$
 
 其中：
 
-* $B$ 是 Batch Size；
-* $S$ 是序列长度；
-* $H$ 是 Hidden Size；
-* $N_h$ 是 Query Head 数；
-* $N_{kv}$ 是 KV Head 数；
-* $D_h$ 是每个 Head 的维度，$H=N_hD_h$；
-* $p$ 是 CP Degree；
-* $b$ 是每个元素的字节数。
+- $B$ 是 Batch Size；
+- $S$ 是序列长度；
+- $H$ 是 Hidden Size；
+- $N_h$ 是 Query Head 数；
+- $N_{kv}$ 是 KV Head 数；
+- $D_h$ 是每个 Head 的维度，$H=N_hD_h$；
+- $p$ 是 CP Degree；
+- $b$ 是每个元素的字节数。
 
 标准 MHA 中 $N_{kv}=N_h$；GQA 和 MQA 中 $N_{kv}<N_h$。假设序列能够被 $p$ 均匀切分。
 
@@ -38,32 +40,35 @@ $$N_{KV}=BSN_{kv}D_hb$$
 
 标准 MHA 中 $N_{KV}=N$。
 
-下文通信量均指一次 Forward 中每 Rank 实际经网络发送的数据量，不计算发给自己的部分。
+下文通信量均指**一次前向、每 Rank 的理论发送字节数**，不计算发给自己的部分，也不叠加接收量。
 
-## Sequence-Sharded Layout
+## 完整前向：本地 token、完整权重
 
-CP 沿序列维度切分输入。第 $r$ 个 Rank 持有：
+CP 沿序列维度切分输入。第 $r$ 个 Rank 持有 $S/p$ 个 token 的完整隐藏特征：
 
 $$X_r\in\mathbb{R}^{B\times S/p\times H}$$
 
-本地执行 QKV Projection 后：
+MLP 的两个投影只混合单个 token 内的特征，因此可以在本卡完成。下图用两层 MLP 展示：$U_r=X_rW_1$、$Z_r=\sigma(U_r)$、$Y_r=Z_rW_2$；$I$ 是完整中间维度，$W_1$ 为 $H\times I$，$W_2$ 为 $I\times H$。
+
+<ContextParallelFlow kind="mlp" />
+
+> 两张前向图均取 $B=1$、$S=4$、$H=4$、$p=2$；MLP 取 $I=8$。Attention 使用 $N_h=N_{kv}=4$、$D_h=1$ 的 MHA，并先画无因果 mask 的情形。矩阵行对应 token，列对应特征或 heads。
+
+LayerNorm、Residual 也只依赖本地 token 的完整隐藏特征。图中的 MLP 在前向无需激活通信；训练时，每卡只从本地 token 得到权重梯度贡献，仍需在 CP 组内归约。[权重与梯度的分布](https://docs.nvidia.com/megatron-core/developer-guide/latest/apidocs/core/core.parallel_state.html)
+
+**Attention 的跨卡依赖来自 KV。** 本地 QKV Projection 使用完整权重，得到：
 
 $$Q_r\in\mathbb{R}^{B\times S/p\times N_h\times D_h}$$
 
 $$K_r,V_r\in\mathbb{R}^{B\times S/p\times N_{kv}\times D_h}$$
 
-也就是：
+每个 Query 还需要与远端 KV 计算 Attention。Ring CP 逐块取得这些 KV，同时维护本地输出的累积状态；处理完全部相关 KV 后，得到 $O_r\in\mathbb{R}^{B\times S/p\times H}$，再用完整 $W_O\in\mathbb{R}^{H\times H}$ 得到 $Y_r=O_rW_O$。
 
-```text
-部分序列
-全部 Q Heads 和 KV Heads
-```
+<ContextParallelFlow kind="attention" />
 
-对于 Linear、LayerNorm、Residual 和 MLP，不同 Token 之间没有数据依赖，因此每个 Rank 可以直接处理自己的 $S/p$ 个 Token。Output Projection 和 MLP 的输出也继续保持 Sequence-Sharded Layout。
+图中 $A$ 是尚未归一化的输出，$m,l$ 是 Online Softmax 的归一化状态，下一节给出更新规则。每轮都继续更新同一份本地状态，因此两个 Rank 最终分别输出 t0–1 与 t2–3，无需再交换 O 或归约 Y。
 
-Attention 不同。第 $r$ 个 Rank 的每个 Query 都需要看到完整序列的 K 和 V，但本地只有 $K_r,V_r$。CP 因此必须在 Attention 内部交换 KV：Query 和输出状态留在原 Rank，KV Chunk 在 Rank 之间移动。
-
-这也是 CP 与 TP 中 SP 的主要区别：SP 通常只让逐 Token 算子的激活保持序列分片，进入 TP Attention 前仍要 AllGather；CP 则让序列分片贯穿整个 Layer，并在 Attention 内部专门处理全局 KV 依赖。
+与 [TP+SP](./TP_SP.md) 对照：TP+SP 先 AllGather 本地序列分片，再用分片权重处理全部 token 的部分 heads；Ring CP 使用完整权重处理本地 token 的全部 heads，远端上下文在 Attention 内部逐轮到达。与 [UP](./UP.md) 对照：UP 通过两次 AllToAll 在 token 分工和 head 分工之间转换；Ring CP 的 Query 与输出始终按 token 分工。
 
 ## Ring Attention
 
@@ -71,30 +76,14 @@ $p$ 个 Rank 组成一个逻辑 Ring。Rank $r$ 将当前 KV Chunk 发送给 Ran
 
 本地 Query $Q_r$ 始终不移动。第 0 轮先计算本地 $Q_r$ 与 $K_r,V_r$；随后经过 $p-1$ 次 KV 传递，依次处理其他 Rank 的 KV Chunk。以 $p=4$ 为例：
 
-```text
-            Rank 0    Rank 1    Rank 2    Rank 3
-Round 0       KV0       KV1       KV2       KV3
-Round 1       KV3       KV0       KV1       KV2
-Round 2       KV2       KV3       KV0       KV1
-Round 3       KV1       KV2       KV3       KV0
-```
+| 当前参与计算的 KV | Rank 0 | Rank 1 | Rank 2 | Rank 3 |
+|---|---|---|---|---|
+| Round 0 | KV₀ | KV₁ | KV₂ | KV₃ |
+| Round 1 | KV₃ | KV₀ | KV₁ | KV₂ |
+| Round 2 | KV₂ | KV₃ | KV₀ | KV₁ |
+| Round 3 | KV₁ | KV₂ | KV₃ | KV₀ |
 
-四轮结束后，每个 Rank 的本地 Query 都与完整序列的 KV 计算过 Attention，但它从未同时保存完整 KV。
-
-```text
-本地 Q_r 固定不动
-        │
-        ├── Local KV_r ──────────→ Block Attention ──┐
-        ├── Receive KV_{r-1} ────→ Block Attention ──┤
-        ├── Receive KV_{r-2} ────→ Block Attention ──┤
-        │                    ...                      ├── 合并输出状态
-        └── Receive KV_{r+1} ────→ Block Attention ──┘
-                                                        │
-                                                        ▼
-                                           O_r：[B, S/p, H]
-```
-
-Ring Attention 是精确 Attention，只改变 KV Chunk 的到达顺序和输出的累积方式，并没有截断 Context 或近似 Attention Matrix。
+四轮结束后，本地 Query 已遍历全序列 KV；实现只需维护当前与下一轮 KV 的缓冲，无需额外拼出一份完整 KV。Ring Attention 保留原 Attention 的数学结果，改变的是 KV 到达顺序与输出累积方式；浮点累积顺序仍可能带来数值差异。[Ring Attention 原论文](https://arxiv.org/html/2310.01889v4#S3)
 
 **跨 KV Chunk 的 Online Softmax**
 
@@ -122,22 +111,13 @@ $$O_i=\frac{A_i}{l_i}$$
 
 这和 FlashAttention 的 Online Softmax 是同一个数学过程。区别在于，FlashAttention 通常在单个 GPU 内合并 SRAM 中的 KV Tile；Ring Attention 合并的是不同 GPU 逐轮送达的 KV Chunk。$m_i,l_i,A_i$ 始终跟随本地 Query 留在原 Rank，Ring 上只传 K 和 V，不传 Score Matrix 或部分输出。
 
-对于 Causal Attention，每轮必须根据 $Q_i$ 和当前 $K_j$ 在完整序列中的原始位置生成 Mask。未来位置对应的 Score 不能参与 $m_i,l_i,A_i$ 的更新。
+对于 Causal Attention，每轮必须根据 $Q_i$ 和当前 $K_j$ 在完整序列中的原始位置生成 Mask。未来位置对应的 Score 不参与更新；若某个 Query Row 在当前块中没有任何可见位置，就直接保留它原有的 $m_i,l_i,A_i$。
 
 KV 传递通常使用双缓冲：一块 Buffer 供当前 Attention 读取，另一块 Buffer 同时接收下一轮 KV。理想情况下，当前 Block Attention 可以掩盖下一轮 Send/Receive。
 
 ## Zig-Zag Ring Attention
 
-对于 Causal Attention，直接将序列切成 $p$ 个连续 Chunk 会造成明显的计算不均衡。
-
-假设 Rank $r$ 持有连续 Chunk $C_r$。较早的 Query 只能看到少量历史 KV，较晚的 Query 则能看到大部分序列。跳过完全位于未来的 KV Block 后，不同 Rank 的有效 Attention 计算量大致为：
-
-```text
-Rank 0：最少
-Rank 1：更多
-...
-Rank p-1：最多
-```
+对于 Causal Attention，较早的 Query 只能访问少量历史 KV，较晚的 Query 能访问更多位置。因此，即使各卡 token 数相同，连续分片也会把更多有效 Attention 计算交给靠后的 Rank。
 
 Zig-Zag Ring Attention 将序列切成 $2p$ 个等长连续 Chunk：
 
@@ -147,14 +127,9 @@ Rank $r$ 同时持有一块较早的序列和一块较晚的序列：
 
 $$\operatorname{Rank}(r)=\{C_r,C_{2p-1-r}\}$$
 
-例如 $p=4$：
+下图保持全局 token 顺序，通过颜色切换所属 Rank；右侧比较同一尺度下的有效计算量。[Zig-Zag 实现中的分片说明](https://github.com/zhuzilin/ring-flash-attention/issues/2)
 
-```text
-Rank 0：C0 + C7
-Rank 1：C1 + C6
-Rank 2：C2 + C5
-Rank 3：C3 + C4
-```
+<ContextParallelBalance />
 
 设每个小 Chunk 的长度相同。$C_t$ 中的 Query 可以访问前面的 $t$ 个完整 KV Chunk，以及本 Chunk 内的下三角区域，其有效计算量可以粗略记为 $t+1/2$ 个 Block。
 
@@ -168,7 +143,7 @@ Zig-Zag 之后，每个 Rank 仍然只持有总长度为 $S/p$ 的 Token，KV �
 
 Zig-Zag 改变的是 Token 到 Rank 的映射，使 Causal Attention 的有效计算更均衡；它不会减少需要交换的 KV 字节数，也不能消除 Ring Latency、慢链路或 Variable-Length Batch 带来的不均衡。
 
-## CP 的通信量与通信计算重叠
+## Ring CP 的通信量与通信计算重叠
 
 完整 K 或 V 的数据量为：
 
@@ -191,7 +166,7 @@ Zig-Zag 只把每 Rank 的 $S/p$ 个 Token 拆成两个不连续 Chunk，本地 
 
 $$V_{\text{Zig-Zag,fwd}}=V_{\text{CP,fwd}}$$
 
-CP 只传输 K 和 V，因此 GQA 和 MQA 可以通过减小 $N_{kv}$ 直接降低通信量。标准 MHA 中 $N_{KV}=N=BSHb$，此时：
+Ring CP 只传输 K 和 V，因此 GQA 和 MQA 可以通过减小 $N_{kv}$ 直接降低通信量。标准 MHA 中 $N_{KV}=N=BSHb$，此时：
 
 $$V_{\text{CP,fwd}}=2\frac{p-1}{p}N$$
 
@@ -205,7 +180,7 @@ $$\frac{V_{\text{CP,fwd}}}{V_{\text{UP,fwd}}}=\frac{p}{2}$$
 
 UP 通过两次 AllToAll 在“部分序列、全部 Heads”和“完整序列、部分 Heads”之间转换，每 Rank 只发送自己的 $1/p$ 激活分片。Ring CP 不切 Head，也不发送 Q 和 O，但本地 KV Chunk 需要经过 $p-1$ 轮转发。
 
-因此不能只看总字节数判断两者优劣：UP Degree 受 Head 数和可整除性约束，并包含 AllToAll 的 Pack、Unpack 和尾延迟；CP 没有相同的 Head 切分限制，还能显著受益于 GQA/MQA，但需要顺序执行多轮 P2P。
+因此不能只看总字节数判断两者优劣：UP Degree 受 Head 数和可整除性约束，并包含 AllToAll 的 Pack、Unpack 和尾延迟；Ring CP 没有相同的 Head 切分限制，GQA/MQA 的较小 KV 也会降低其发送量，但它需要顺序执行多轮 P2P。
 
 使用双缓冲后，一组 Ring Attention 的时间可以粗略写成：
 

@@ -27,6 +27,8 @@ import TensorParallelMatMul from "./components/diagrams/TensorParallelMatMul.vue
 import SequenceParallelLayout from "./components/diagrams/SequenceParallelLayout.vue"
 import UlyssesLayout from "./components/diagrams/UlyssesLayout.vue"
 import TensorParallelFlow from "./components/diagrams/TensorParallelFlow.vue"
+import ContextParallelFlow from "./components/diagrams/ContextParallelFlow.vue"
+import ContextParallelBalance from "./components/diagrams/ContextParallelBalance.vue"
 
 defineMermaidConfig({
   flowchart: {
@@ -92,5 +94,7 @@ export default defineClientConfig({
     app.component("SequenceParallelLayout", SequenceParallelLayout)
     app.component("UlyssesLayout", UlyssesLayout)
     app.component("TensorParallelFlow", TensorParallelFlow)
+    app.component("ContextParallelFlow", ContextParallelFlow)
+    app.component("ContextParallelBalance", ContextParallelBalance)
   },
 })
