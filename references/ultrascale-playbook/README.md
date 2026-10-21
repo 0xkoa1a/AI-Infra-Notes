@@ -2,8 +2,10 @@
 
 来源：[Hugging Face 原文](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=tensor_parallelism)；下载日期：2026-10-21。
 
-保存整篇文档，原链接定位的 Tensor Parallelism 也包含在内。英文原文保留，未翻译或改写。
+保存整篇文档，原链接定位的 Tensor Parallelism 也包含在内。英文原文保留。
 
+- [张量并行中文译文](tensor-parallelism.zh-CN.md)：包含 TP 和 SP，按网页原文逐句翻译。
+- [上下文并行中文译文](context-parallelism.zh-CN.md)：按网页原文逐句翻译。
 - [完整 PDF](playbook.pdf)：作者发布的 PDF，直接打开即可离线阅读文字、公式与图片。
 - [网页版本](index.html)：保留网页正文、侧注、动态图、公式与交互图表；Tensor Parallelism 对应 `#tensor-parallelism`。
 - [Markdown 源文件](upstream.md)：作者提供的补充版本，已改为本地图片路径。该上游版本与网页措辞存在差别，并缺少部分交互图表和内嵌代码，请以网页和 PDF 为主要阅读版本。
