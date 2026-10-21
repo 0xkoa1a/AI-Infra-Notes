@@ -4,6 +4,7 @@
 
 保存整篇文档，原链接定位的 Tensor Parallelism 也包含在内。英文原文保留。中文译文统一存放于 `notes/ultrascale-playbook/`，并接入知识库导航。
 
+- [数据并行中文译文](../../notes/ultrascale-playbook/data-parallelism.md)：包含 DP 和 ZeRO，按网页原文逐句翻译。
 - [张量并行中文译文](../../notes/ultrascale-playbook/tensor-parallelism.md)：包含 TP 和 SP，按网页原文逐句翻译。
 - [上下文并行中文译文](../../notes/ultrascale-playbook/context-parallelism.md)：按网页原文逐句翻译。
 - [完整 PDF](playbook.pdf)：作者发布的 PDF，直接打开即可离线阅读文字、公式与图片。
