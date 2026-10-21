@@ -31,18 +31,21 @@ const selectedToken = computed(() => localTokens(gpu.value)[tokenIndex.value])
 const needs = (token: Token) => [...new Set(token.experts.map(e => Math.floor(e / 2)))]
 const labels = computed(() => props.view === "dispatch" ? ["发布索引与计数", "接收卡拉取输入", "发布输入块就绪"] : ["专家结果写回", "等待专家卡通知", "源卡逐元素求和"])
 const title = computed(() => {
-  const titles: Record<string, string> = { placement: "四张 GPU 的源 token 与专家", symmem: "各卡拥有布局对应的 Symmem 缓冲", dispatch: labels.value[step.value], combine: labels.value[step.value] }
+  const titles: Record<string, string> = { placement: "四张 GPU 的源 token 与专家", symmem: "各卡拥有布局对应的 Symmem 缓冲", dispatch: labels.value[step.value], indices: "GPU 0 · E0 的接收索引列表", batch: "GPU 0 · E0 的输入行与来源记录", combine: labels.value[step.value] }
   return titles[props.view] || "MegaMoE 数据流"
 })
-const height = computed(() => props.view === "placement" ? 390 : props.view === "symmem" ? 670 : props.view === "dispatch" ? 650 : 710)
+const height = computed(() => {
+  const heights: Record<string, number> = { placement: 390, symmem: 670, dispatch: 650, indices: 300, batch: 460, combine: 710 }
+  return heights[props.view] || 710
+})
 const regions = [
   { y: 94, h: 45, name: "状态与计数", sub: "就绪 / 释放 / 回传完成" },
   { y: 139, h: 50, name: "接收索引列表", sub: "本地专家 × 来源 GPU" },
   { y: 189, h: 50, name: "来源记录", sub: "来源 GPU / token / 槽" },
   { y: 239, h: 53, name: "源输入 X + scale", sub: "本卡 token" },
   { y: 292, h: 45, name: "路由编号 + α", sub: "每 token 两个槽" },
-  { y: 337, h: 58, name: "L1 输入环", sub: "X + scale + α" },
-  { y: 395, h: 53, name: "L2 输入环", sub: "A + scale" },
+  { y: 337, h: 58, name: "L1 输入缓冲", sub: "X + scale + α" },
+  { y: 395, h: 53, name: "L2 输入缓冲", sub: "A + scale" },
   { y: 448, h: 83, name: "Combine 回传槽", sub: "槽 0 / 槽 1" },
 ]
 const arrow = `url(#${id}-arrow)`
@@ -57,6 +60,14 @@ function combinePath(route: Route) {
   const rowY = 461 + route.token.index * 70
   return `M${resultX(route)} ${resultY(route) + 37} V${resultY(route) + 57} H${outlet} V284 C${outlet} 323,${inlet} 323,${inlet} 365 V${rowY} H${end}`
 }
+const description = computed(() => {
+  if (props.view === "placement") return "四卡各有两个token和两个专家。a0选择E0/E3，a1选择E1/E4，b0选择E2/E5，b1选择E3/E6，c0选择E4/E7，c1选择E5/E0，d0选择E6/E1，d1选择E7/E2。颜色跟踪来源GPU，专家权重保存在所属卡。"
+  if (props.view === "symmem") return "四卡的Symmem字段依次对应：状态与计数、接收索引、来源记录、源输入和scale、路由编号和alpha、L1输入缓冲、L2输入缓冲、Combine回传槽。专家权重在所属卡另行存放。"
+  if (props.view === "indices") return "GPU0的E0为G0、G1、G2、G3各预留相同容量的列表。G0有效1条，索引0表示a0的槽0；G2有效1条，索引3表示c1的槽1；G1、G3有效计数为0。虚线格为预留位置，读取范围由有效计数决定。"
+  if (props.view === "batch") return "GPU0将本卡a0和GPU2的c1放成E0输入块的两行，每行512个特征，旁边分别保存G0/a0/s0和G2/c1/s1的来源记录。块容量64行，有效行数2。这两行的输入、scale、alpha写完后，该块就绪，L1可以读取。"
+  if (props.view === "dispatch") return `当前为${title.value}，跟踪GPU${gpu.value}。源卡先发布索引和计数，专家卡随后按列表拉取输入并保存来源记录，输入块写完后通知L1。颜色跟踪来源GPU，高亮相关条目。`
+  return `跟踪源GPU${gpu.value}的${selectedToken.value.name}。专家卡将结果写回原token的路由槽，源卡等待所选专家卡完成本轮全部L2写回的通知，再将两个槽逐元素相加。`
+})
 </script>
 
 <template>
@@ -74,7 +85,7 @@ function combinePath(route: Route) {
   <div class="scroll" role="region" tabindex="0" :aria-label="`${title}，可横向滚动`">
     <svg class="four-gpu" :viewBox="`0 0 1000 ${height}`" role="img" :aria-labelledby="`${id}-title ${id}-desc`">
       <title :id="`${id}-title`">{{ title }}</title>
-      <desc :id="`${id}-desc`">四卡各有两个 token 和两个专家。a0 选择 E0/E3，a1 选择 E1/E4，b0 选择 E2/E5，b1 选择 E3/E6，c0 选择 E4/E7，c1 选择 E5/E0，d0 选择 E6/E1，d1 选择 E7/E2。颜色标识 token 的来源 GPU。{{ view === 'symmem' ? '四列依次画出状态、接收索引、来源记录、源输入、路由、L1 环、L2 环和回传槽，相同字段处于相同相对偏移，专家权重单独存放。' : view === 'dispatch' ? `当前步骤为${title}。选中 GPU ${gpu}，高亮其发送的索引或接收的数据，其余条目淡显。索引列表按专家和来源组织；拉取阶段，专家所在卡发起读取，输入数据从源卡流向专家卡。来源记录随专家输入行保存。` : view === 'combine' ? `跟踪源 GPU ${gpu} 的 ${selectedToken.name}。结果由专家卡写回原 token 的路由槽；每个 token 等待所选专家所在卡完成本轮全部 L2 写回的通知，再将两份结果逐元素相加。` : '每卡先展示原始 token 和两个路由槽，再展示本卡保存的专家权重。' }}</desc>
+      <desc :id="`${id}-desc`">{{ description }}</desc>
       <defs>
         <marker :id="`${id}-arrow`" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="arrowhead" /></marker>
         <marker :id="`${id}-signal`" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="signal-head" /></marker>
@@ -140,7 +151,7 @@ function combinePath(route: Route) {
           </g>
           <rect :x="sx(rank) - 72" y="562" width="144" height="67" rx="6" class="box" />
           <text :x="sx(rank)" y="587" class="center">E{{ rank * 2 }} / E{{ rank * 2 + 1 }}</text>
-          <text :x="sx(rank)" y="612" class="center small muted">W₁ / W₂</text>
+          <text :x="sx(rank)" y="612" class="center small muted">两次投影权重</text>
         </g>
       </g>
 
@@ -160,7 +171,7 @@ function combinePath(route: Route) {
           <g v-for="expert in [rank * 2, rank * 2 + 1]" :key="expert" :transform="`translate(${cx(rank) - 92},${381 + expert % 2 * 122})`">
             <rect width="184" height="108" rx="5" class="box" />
             <text x="12" y="21">E{{ expert }}</text>
-            <text v-if="step < 2" x="172" y="21" class="small muted" text-anchor="end">{{ step === 0 ? '2 条索引' : '拉取 / 保存来源' }}</text>
+            <text v-if="step < 2" x="172" y="21" class="small muted" text-anchor="end">{{ step === 0 ? '2 条有效索引' : '拉取 / 保存来源' }}</text>
             <g v-else>
               <text x="95" y="21" class="small ready ink">✓</text>
               <path d="M108 16 H143" class="signal" :marker-end="signalArrow" />
@@ -180,6 +191,52 @@ function combinePath(route: Route) {
         <g v-else>
           <text x="500" y="270" class="center small muted">每个输入块独立通知对应的 L1 任务</text>
         </g>
+      </g>
+
+      <g v-else-if="view === 'indices'">
+        <text x="500" y="27" class="center strong">{{ title }}</text>
+        <g v-for="rank in ranks" :key="rank">
+          <rect :x="cx(rank) - 105" y="58" width="210" height="155" rx="8" class="panel" />
+          <text :x="cx(rank)" y="86" class="center">来源 G{{ rank }}</text>
+          <text :x="cx(rank)" y="111" class="center small muted">有效 {{ received(0).filter(r => r.token.rank === rank).length }} 条</text>
+          <g v-for="slot in [0, 1, 2]" :key="slot">
+            <rect :x="cx(rank) - 80 + slot * 48" y="128" width="43" height="38" rx="3" :class="slot === 0 && (rank === 0 || rank === 2) ? `tint owner${rank}` : 'pending'" />
+            <text :x="cx(rank) - 59 + slot * 48" y="153" class="center">{{ slot === 2 ? '…' : slot === 0 && rank === 0 ? '0' : slot === 0 && rank === 2 ? '3' : '—' }}</text>
+          </g>
+          <g v-if="rank === 0 || rank === 2">
+            <path :d="`M${cx(rank) - 59} 170 V236`" class="edge" :marker-end="arrow" />
+            <text :x="cx(rank) - 59" y="259" class="center">{{ rank === 0 ? 'a0 / s0' : 'c1 / s1' }}</text>
+          </g>
+        </g>
+      </g>
+
+      <g v-else-if="view === 'batch'">
+        <text x="500" y="27" class="center strong">{{ title }}</text>
+        <text x="130" y="66" class="center">源输入 · H=512</text>
+        <text x="480" y="66" class="center">L1 输入缓冲 · 本卡显存</text>
+        <text x="840" y="66" class="center">来源记录</text>
+        <g v-for="(route, row) in received(0)" :key="route.token.name">
+          <text x="20" :y="122 + row * 50" class="small">G{{ route.token.rank }} · {{ route.token.name }}</text>
+          <rect v-for="col in [0, 1, 2, 3]" :key="col" :x="100 + col * 32" :y="99 + row * 50" width="32" height="32" :class="`tint owner${route.token.rank}`" />
+          <path :d="`M233 ${115 + row * 50} H344`" class="edge" :marker-end="arrow" />
+          <rect x="350" :y="90 + row * 50" width="260" height="50" :class="`tint owner${route.token.rank}`" />
+          <text x="480" :y="121 + row * 50" class="center">行 {{ row }} · {{ route.token.name }}</text>
+          <path :d="`M615 ${115 + row * 50} H704`" class="edge" :marker-end="arrow" />
+          <rect x="710" :y="90 + row * 50" width="260" height="50" rx="4" class="box" />
+          <text x="840" :y="121 + row * 50" class="center">G{{ route.token.rank }} / {{ route.token.name }} / s{{ route.slot }}</text>
+        </g>
+        <text x="130" y="215" class="center small muted">各自携带 scale、α</text>
+        <rect x="350" y="190" width="260" height="125" class="pending" />
+        <text x="480" y="259" class="center muted">其余 62 行容量</text>
+        <text x="480" y="342" class="center strong">有效 2 行 / 容量 64 行</text>
+        <g v-for="(route, row) in received(0)" :key="route.token.name">
+          <rect :x="185 + row * 135" y="382" width="120" height="42" rx="5" class="tint ready" />
+          <text :x="245 + row * 135" y="409" class="center">{{ route.token.name }} ✓</text>
+        </g>
+        <path d="M245 428 V440 H510 V403 H544 M380 428 V440 M770 403 H815" class="signal" :marker-end="signalArrow" />
+        <rect x="550" y="382" width="215" height="42" rx="5" class="tint ready" />
+        <text x="657" y="409" class="center">输入块就绪</text>
+        <text x="870" y="409" class="center">L1 读取</text>
       </g>
 
       <g v-else>
@@ -228,5 +285,8 @@ function combinePath(route: Route) {
   </div>
   <figcaption v-if="view === 'placement'">颜色跟踪 token 的来源 GPU；专家权重保存在所属 GPU。</figcaption>
   <figcaption v-else-if="view === 'symmem'">按字段顺序展示布局；图中区段高度采用示意比例。</figcaption>
+  <figcaption v-else-if="view === 'indices'">每组容量为 Tₘₐₓ；数字为有效索引，虚线格为预留位置。</figcaption>
+  <figcaption v-else-if="view === 'batch'">每行保存一个 token 的全部输入特征；来源记录保留这一行的回传位置。</figcaption>
+  <figcaption v-else-if="view === 'combine'">每个回传槽保存一条 H 维专家贡献；实线为数据，虚线为完成通知。</figcaption>
   <figcaption v-else>颜色：token 来源；实线：索引或数据；虚线：就绪通知。高亮所选 GPU 的相关条目。</figcaption>
 </template>

@@ -3,8 +3,8 @@ import { computed } from "vue"
 import MegaMoERouting from "./MegaMoERouting.vue"
 import MegaMoECompute from "./MegaMoECompute.vue"
 
-const props = defineProps<{ view: "placement" | "symmem" | "dispatch" | "compute" | "partition" | "readiness" | "combine" | "schedule" | "ring" }>()
-const routing = computed(() => ["placement", "symmem", "dispatch", "combine"].includes(props.view))
+const props = defineProps<{ view: "placement" | "symmem" | "dispatch" | "indices" | "batch" | "compute" | "partition" | "readiness" | "combine" | "schedule" | "ring" }>()
+const routing = computed(() => ["placement", "symmem", "dispatch", "indices", "batch", "combine"].includes(props.view))
 </script>
 
 <template>
