@@ -1,0 +1,1326 @@
+{
+  "source_url": "https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=tensor_parallelism",
+  "download_date": "2026-10-21",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2193,
+      "sha256": "5dba76013244e60b57d91b8ad56bb0acf9ab9b3cb75265e604394d88a1263c2e"
+    },
+    {
+      "path": "assets/data/benchmarks/banner.html",
+      "bytes": 529203,
+      "sha256": "4fe4b8189607a29b43cd15662a3b12d4c1bc65d1d4a2062027b649678077c31c"
+    },
+    {
+      "path": "assets/data/benchmarks/benchmarks_interactive.html",
+      "bytes": 2934142,
+      "sha256": "22bcd7a43eb23aa3eab3523829eb86a995a34d58a4879051241cbf3ddc9f202b"
+    },
+    {
+      "path": "assets/data/benchmarks/cp_8Bmemoryusage.html",
+      "bytes": 12526,
+      "sha256": "b11efba95d2aabd3f105dedab33bc4bc827f0705d6447979539856a30398ef1d"
+    },
+    {
+      "path": "assets/data/benchmarks/dp_ourjourney_memoryusage.html",
+      "bytes": 12096,
+      "sha256": "ab94da4b4c7508f6bd6433e175128b77f934c57be65d079d41584e6bf751000b"
+    },
+    {
+      "path": "assets/data/benchmarks/dp_scaling.html",
+      "bytes": 10738,
+      "sha256": "22a955621fb9e958bd96825929d57284601102a1cc1488d3e827dca14f949e84"
+    },
+    {
+      "path": "assets/data/benchmarks/memory-profile.html",
+      "bytes": 2490027,
+      "sha256": "d0a6b1d28e9cb2fe0ba26ca772aa556f993e13a65f22eb61dee7714a733cb1a7"
+    },
+    {
+      "path": "assets/data/benchmarks/memory-recomputation.html",
+      "bytes": 20426,
+      "sha256": "8dc686ff3b6dae94ed7b1b6fa1d3cdb177b3ad5daa556340e5c5dd5321bfdd75"
+    },
+    {
+      "path": "assets/data/benchmarks/memusage_activations.html",
+      "bytes": 12214,
+      "sha256": "d26829f23c0ccc9aa461f47a2e481669ef3f0613a42c0827bd557497b91068aa"
+    },
+    {
+      "path": "assets/data/benchmarks/pp_bubblesize.html",
+      "bytes": 9280,
+      "sha256": "d82d6dd26969744beac957660f14b8669ba2660a8dd99c36666a10a50072b31e"
+    },
+    {
+      "path": "assets/data/benchmarks/pp_comm_bandwidth.html",
+      "bytes": 10257,
+      "sha256": "352a3fd1046654a0f772072496dbd2f18b027eee0dfe56de2e79d4387c299567"
+    },
+    {
+      "path": "assets/data/benchmarks/pp_memoryusage.html",
+      "bytes": 10638,
+      "sha256": "eff2f68558b35b4e21c8072e33c41c1733edac90581bd6dd7945ed9004d178c0"
+    },
+    {
+      "path": "assets/data/benchmarks/tp_memoryusage.html",
+      "bytes": 11962,
+      "sha256": "cf0b290748475a151e29eaced31f129f749060c39bca213c148ab80fd44644e4"
+    },
+    {
+      "path": "assets/data/benchmarks/tp_scaling.html",
+      "bytes": 10352,
+      "sha256": "51c0aacc52a178151880ae9f5754746cdff6a69858f52b428210363940454729"
+    },
+    {
+      "path": "assets/data/benchmarks/tp_sp_memoryusage.html",
+      "bytes": 11981,
+      "sha256": "722c91fba8fa13296faaa7ae81b74e13636b6ea206f3af144b6d16684f12618e"
+    },
+    {
+      "path": "assets/data/benchmarks/tp_sp_scaling.html",
+      "bytes": 10376,
+      "sha256": "e947f2f4ecc89453de06fffde3be19885022d97561d628b06cc832705e1d2857"
+    },
+    {
+      "path": "assets/data/benchmarks/zero3_memoryusage.html",
+      "bytes": 13038,
+      "sha256": "77b4e40a1adfcf6ef352f4f401d2d4d7202b5b4a4419aedc98410cd06499b205"
+    },
+    {
+      "path": "assets/data/fp8/fp8_training_loss_curves.html",
+      "bytes": 406833,
+      "sha256": "11cb88a45e9e44d0bd60ed00084ca63938226031ff25192e32decbcfd52ebffb"
+    },
+    {
+      "path": "assets/images/256px-PDF.png",
+      "bytes": 1251,
+      "sha256": "38ba9d71a429465ee0b469b43dd0969790e9cfe72c02857f31a75412b3c9e81e"
+    },
+    {
+      "path": "assets/images/5Dparallelism_8Bmemoryusage.svg",
+      "bytes": 122096,
+      "sha256": "105710bcba58a8bece2a7d17b12d023f14a1dd0bbc28c422e693529783ef5030"
+    },
+    {
+      "path": "assets/images/5d_full.svg",
+      "bytes": 76874,
+      "sha256": "827143aeb57374c0f522934548432fdd119b29e10d4f45f690e0de26e0f85cb9"
+    },
+    {
+      "path": "assets/images/5d_nutshell_cp.svg",
+      "bytes": 37301,
+      "sha256": "8a8df00e903d5831bb3c986ed23ebb46af9c0e25dd60dbc05d7c5814f7fa1ea6"
+    },
+    {
+      "path": "assets/images/5d_nutshell_ep.svg",
+      "bytes": 41893,
+      "sha256": "55c4d80787d16a8992caf2e569b49014f1e7ccd7f8ab577b90cd4a68c9ec9c57"
+    },
+    {
+      "path": "assets/images/5d_nutshell_tp_sp.svg",
+      "bytes": 41781,
+      "sha256": "4fb7e8f76a77427571120e2b737fb4d4c22572ea90e69983f8fbab6c0f9dac12"
+    },
+    {
+      "path": "assets/images/IMG_7537D08D7F41-1.jpeg",
+      "bytes": 92553,
+      "sha256": "0cf8bd37314fa9d5481fee13aa48c83ae79e673ff88e7429859df95b4db629e7"
+    },
+    {
+      "path": "assets/images/IMG_A95961668B3F-1.jpeg",
+      "bytes": 209851,
+      "sha256": "9894664ccaf778043c7587aa4f958b01027c9b764c2d2d62dcf86330c5c8f2cc"
+    },
+    {
+      "path": "assets/images/IMG_C4260C5C58DC-1.jpeg",
+      "bytes": 138892,
+      "sha256": "e6f80be8f067fd7d6154b075b324cb17cfc6c0ba671b6a3bf339ca2945e4ef46"
+    },
+    {
+      "path": "assets/images/IMG_DA188FF29F45-1.jpeg",
+      "bytes": 154062,
+      "sha256": "fbb82641c0af2c428c6f7fed624763004695463ce5a914b36fa5850ac30946c6"
+    },
+    {
+      "path": "assets/images/a0_all_gather.gif",
+      "bytes": 171926,
+      "sha256": "e1560bd520d988e7c86413c2bb74c60f1518b2afcf1b22535c7238454ac02e58"
+    },
+    {
+      "path": "assets/images/a0_barrier.png",
+      "bytes": 9726,
+      "sha256": "c9f30fbd826c4fcd66eeb88f55ebf390cd1058aa9e746f8b404a1520d7ea916d"
+    },
+    {
+      "path": "assets/images/a0_broadcast.png",
+      "bytes": 15035,
+      "sha256": "4f428db5757d3f22557285376133420fa505b0d5a5fefa18c87db09c5343d822"
+    },
+    {
+      "path": "assets/images/a0_gather_allgather.png",
+      "bytes": 23100,
+      "sha256": "6707b460061ed0c317fe6153ca6ba67d24834ee21177df7e74d19f396110348e"
+    },
+    {
+      "path": "assets/images/a0_general.png",
+      "bytes": 12932,
+      "sha256": "9c67e275c6a85fad8a57d5681b1d64119dcf2ff17e19d022f4bcb5857f3f0589"
+    },
+    {
+      "path": "assets/images/a0_reduce_allreduce.png",
+      "bytes": 25860,
+      "sha256": "b7e482ffbe6d1bd420d39932fc5dcbe1e298a824ae61e3f816c6c6e4dd8a9e36"
+    },
+    {
+      "path": "assets/images/a0_reduce_scatter.gif",
+      "bytes": 131405,
+      "sha256": "5edcb2c7fb9fade592b1ec7aa51db42c004c0a4c50b72eb9c569ca7191abfd8e"
+    },
+    {
+      "path": "assets/images/a0_scatter_reducescatter.png",
+      "bytes": 23642,
+      "sha256": "982dd95c78378b20747034035dfa18f5059f0cd785d8f003cad9cea1eafe1e8a"
+    },
+    {
+      "path": "assets/images/a1_kernels.png",
+      "bytes": 23636,
+      "sha256": "8e080b4e75b28bb1d3362c8d471f1c214a7b2e2322ab1ca8e9e984ef199f1d7f"
+    },
+    {
+      "path": "assets/images/a1_ncu.png",
+      "bytes": 75196,
+      "sha256": "2cf77f9c3ceb21fa12748edf859e6456ed677609974b4a5e3a2b8b8e395fa802"
+    },
+    {
+      "path": "assets/images/a1_profile_trace.png",
+      "bytes": 24157,
+      "sha256": "a659ad76cddc41298cd032e28baf9e0d9f633b9eace9cdec42e8f8363ca0fcb1"
+    },
+    {
+      "path": "assets/images/activation_recomputation.js",
+      "bytes": 5615,
+      "sha256": "de70891654cf52f3aa487fb54cdab61acde828d2c9b1e53e2aa6edd1b2207a2c"
+    },
+    {
+      "path": "assets/images/activation_recomputation.png",
+      "bytes": 13746,
+      "sha256": "f0cf8e6be21d6117c2bfee093ef0c391a97357de64835f508b9d528be55c51ea"
+    },
+    {
+      "path": "assets/images/activation_recomputation.svg",
+      "bytes": 39602,
+      "sha256": "cd343192a300acee8dad216a6e2f63bfd119acb1450fd47a161e61e90017e2b6"
+    },
+    {
+      "path": "assets/images/activationrecomputation_memory.svg",
+      "bytes": 42141,
+      "sha256": "1f78dc7e827680e5c4b1ff346d8424ff33cfc497c144f8148b150e867350b673"
+    },
+    {
+      "path": "assets/images/conclusion_llama3_parallelism.png",
+      "bytes": 111646,
+      "sha256": "c67a054b04cf57250b5bc30c128d8e9ba041a64aea5b176cdc804cd0c1325162"
+    },
+    {
+      "path": "assets/images/cp_70bmemoryusage.svg",
+      "bytes": 51503,
+      "sha256": "92d657f2e2c4a03d425ded36ba55d02e8b6bdb9c106edc25a18177d34183eed6"
+    },
+    {
+      "path": "assets/images/cp_8Bmemoryusage.svg",
+      "bytes": 48443,
+      "sha256": "b8e492f54eaaedb9a592aa3f7fb5a6f2984a2b44cd854e2a6f02589d4027af28"
+    },
+    {
+      "path": "assets/images/cp_attnmask.svg",
+      "bytes": 75290,
+      "sha256": "c42256f3ea2fdd31be766cc7f68d179ecf6e24cf48aebe0f91154e80268801c7"
+    },
+    {
+      "path": "assets/images/cp_memoryusage.svg",
+      "bytes": 48443,
+      "sha256": "d8fffb5fff287665e8730deaccfc9d12dc17c7721fade5b51283116e9879f402"
+    },
+    {
+      "path": "assets/images/cp_overlap_all2all.svg",
+      "bytes": 33540,
+      "sha256": "6b736945e7642300a8f6a9e71509b7df791fb11f6b80c0a0e923f68b025abfe3"
+    },
+    {
+      "path": "assets/images/cp_overlap_allgather.svg",
+      "bytes": 27362,
+      "sha256": "863b27b34847b863c1efadb832f19162a17b564198b2110185ee4d030dfda42d"
+    },
+    {
+      "path": "assets/images/cp_zigzagmask.svg",
+      "bytes": 75290,
+      "sha256": "e50577edbb411a5fadc32b200ebbaed43a5808732d66736a2496a9e3bf50dffe"
+    },
+    {
+      "path": "assets/images/diving_primergpu.svg",
+      "bytes": 98902,
+      "sha256": "cf4e2ee34853571301e51a86ca735d498c364829bfb92309c5a8a2ea4bf75763"
+    },
+    {
+      "path": "assets/images/diving_primergpu2.svg",
+      "bytes": 107256,
+      "sha256": "438d193a034e9ae6a13c21afa4b3a88afa71ba710800626f2654f0f9414ddc0f"
+    },
+    {
+      "path": "assets/images/dp_diagram.png",
+      "bytes": 25006,
+      "sha256": "49f77932b1a5083c97a5e427ba646d8ba6cd6f3eb1fd2f603f5c376bef44b352"
+    },
+    {
+      "path": "assets/images/dp_ourjourney_memoryusage.svg",
+      "bytes": 47558,
+      "sha256": "02e397dd6eb40e5b3e340b80fd272924a8096f4709746d25a9d42e3bd351148d"
+    },
+    {
+      "path": "assets/images/dp_overlap1.svg",
+      "bytes": 35034,
+      "sha256": "fd0dc3a289f06625993112a16b0b23c9022ef34b8d4f34845190a08f0a15c8ea"
+    },
+    {
+      "path": "assets/images/dp_overlap2.svg",
+      "bytes": 46685,
+      "sha256": "80fb9f56fce2eb9702652a0b3c20b5885f79aa18af1e5b1fae0b36ad750cb16b"
+    },
+    {
+      "path": "assets/images/dp_overlap3.svg",
+      "bytes": 36440,
+      "sha256": "af996d2c62c372d10173ca2626d90f322d6bbd9e89ec6af17fbd15a6dd7a3a40"
+    },
+    {
+      "path": "assets/images/dp_scaling.svg",
+      "bytes": 46890,
+      "sha256": "1397a1831141f68c9e51e786846f737a8acc912004c044f991e0211b84d2403f"
+    },
+    {
+      "path": "assets/images/dp_zero1.gif",
+      "bytes": 69899,
+      "sha256": "1812a4a0157c66dcc7c14bc3adae54d087f4f8fb086bd54ce61404698f739b7d"
+    },
+    {
+      "path": "assets/images/dp_zero1_overlap.svg",
+      "bytes": 42244,
+      "sha256": "51c1a3474bfab12ed12ce184a5c2cf23be8143d2e98b6efde14de67ec846f843"
+    },
+    {
+      "path": "assets/images/dp_zero2.gif",
+      "bytes": 71936,
+      "sha256": "b10ed41b1200c92ca132e37363c4931de798231e1ecc9e10127da6951fd11b49"
+    },
+    {
+      "path": "assets/images/dp_zero2_overlap.svg",
+      "bytes": 42244,
+      "sha256": "51c1a3474bfab12ed12ce184a5c2cf23be8143d2e98b6efde14de67ec846f843"
+    },
+    {
+      "path": "assets/images/dp_zero3_bwd.svg",
+      "bytes": 118398,
+      "sha256": "6e659e70ce78af3bcd014617e9d22a4774b095bb750f605205b4b09089d05bd5"
+    },
+    {
+      "path": "assets/images/dp_zero3_fwd.svg",
+      "bytes": 109560,
+      "sha256": "4b17385ef6af72533beb9a2d96eadb188eeaeca72bd288ca3fad4945d861a2c7"
+    },
+    {
+      "path": "assets/images/dp_zero3_overlap.svg",
+      "bytes": 46000,
+      "sha256": "2f82a736344216c07a94a7c12776542dd766a475158a5aa3cd2ce1e7595a76ff"
+    },
+    {
+      "path": "assets/images/ep_moe.png",
+      "bytes": 27103,
+      "sha256": "44aa57c2792ecf7b8577e76320fc7d97dc684b9fae1f348d7ded2ee58039ed9d"
+    },
+    {
+      "path": "assets/images/ep_schema.png",
+      "bytes": 42136,
+      "sha256": "2f5dd613eec7baceb67f7c8a7daca07e15b7e15a465fa22afc1cf7ab9c1d0281"
+    },
+    {
+      "path": "assets/images/first_steps_memory_profile.js",
+      "bytes": 5687,
+      "sha256": "9d216b1929e1d19663f43b91e84701d7bee5d28eb09a4d71534fe69a92af22c2"
+    },
+    {
+      "path": "assets/images/first_steps_memory_profile.svg",
+      "bytes": 541407,
+      "sha256": "de4a4ca821e5351b988f05947ab07c673a8ae7864c95973bdfcbbbcfa231f737"
+    },
+    {
+      "path": "assets/images/first_steps_simple_training.js",
+      "bytes": 5627,
+      "sha256": "ebd5b9d2118354d5015f8a7bac8646e364b73fa4102c00b16ce204ca8d2d31ee"
+    },
+    {
+      "path": "assets/images/first_steps_simple_training.svg",
+      "bytes": 38289,
+      "sha256": "740a0f02bbff521cc8c7e9f6f157ed0911ff485c06037cb39db59238798170d8"
+    },
+    {
+      "path": "assets/images/flashattn.png",
+      "bytes": 19449,
+      "sha256": "ff6c2d15bc23791cba14af7548b36019728e039eafcd53f1e7b0c9fc095f6a42"
+    },
+    {
+      "path": "assets/images/flashattn2.png",
+      "bytes": 106825,
+      "sha256": "f6756dce500f40fdf6ebb370e87f9ca64354825599a32cc0738600319a918344"
+    },
+    {
+      "path": "assets/images/fp8_diagram.png",
+      "bytes": 29913,
+      "sha256": "b2b57640401e09d399ae2e5f153f1d805ac796fd7ae6ff696e9059fa38231037"
+    },
+    {
+      "path": "assets/images/fp8_divergence.png",
+      "bytes": 65670,
+      "sha256": "aebe4c4ec07fb2784bd06a5cc73840ec38f354187928a0f5de16730886c1a146"
+    },
+    {
+      "path": "assets/images/fp8_training_loss_curves.svg",
+      "bytes": 101270,
+      "sha256": "5e85d276214ee4cca57b048fc3bcd0e18038f8726f933b2398020e95180ceb5a"
+    },
+    {
+      "path": "assets/images/fused_kernels1.png",
+      "bytes": 37801,
+      "sha256": "ba311fd31cddf3eee69cc7efc1f4fdae9e556341cea34621fe9703be5ea10249"
+    },
+    {
+      "path": "assets/images/fused_kernels2.png",
+      "bytes": 21328,
+      "sha256": "37a6b60500a4e86cd9bf511fe4df9a406a39169c11fb13b02cb28239dadaefb0"
+    },
+    {
+      "path": "assets/images/gradaccumulation_diag.png",
+      "bytes": 23338,
+      "sha256": "99923902cb76c3c04fc9f9ffb50d5ab32152c7daa87ffdd37c494d4e37deccaa"
+    },
+    {
+      "path": "assets/images/image 1.png",
+      "bytes": 15035,
+      "sha256": "4f428db5757d3f22557285376133420fa505b0d5a5fefa18c87db09c5343d822"
+    },
+    {
+      "path": "assets/images/image 10.png",
+      "bytes": 227266,
+      "sha256": "8c52eed152935dcdad2ba5702da8dd49c32b3e8d5909978875893fcf22b40707"
+    },
+    {
+      "path": "assets/images/image 11.png",
+      "bytes": 179508,
+      "sha256": "8269a932463c3a5dc44b83fd1be0e4bfc44f516a7b11f29e31057941bde895b7"
+    },
+    {
+      "path": "assets/images/image 12.png",
+      "bytes": 281671,
+      "sha256": "3189da7d36469543f72178cc28638be966c68c813af8d191427270c5a0ca178d"
+    },
+    {
+      "path": "assets/images/image 13.png",
+      "bytes": 255122,
+      "sha256": "e04002322cbe534a911b34a26c8e937ad7539080e600e6cce28b19d2b14d4bb8"
+    },
+    {
+      "path": "assets/images/image 14.png",
+      "bytes": 230149,
+      "sha256": "cae181f97a95800da98a017d47a8748e37f5dd35d91ccdea98b23e1206f2499c"
+    },
+    {
+      "path": "assets/images/image 15.png",
+      "bytes": 176591,
+      "sha256": "78cf2c31c7f50ef4362c030a55e852711958793c4c04cfb2cd98d6077d42f90a"
+    },
+    {
+      "path": "assets/images/image 16.png",
+      "bytes": 166391,
+      "sha256": "4b4f9fab48d5c915c7b7ea989161c703b492ada85d02b9e37c661b366eb84dc3"
+    },
+    {
+      "path": "assets/images/image 17.png",
+      "bytes": 482136,
+      "sha256": "95b24ff72a88ff7ca77978b5acfa3be2366a098a5e64d2d753b21ad23c349e96"
+    },
+    {
+      "path": "assets/images/image 2.png",
+      "bytes": 25860,
+      "sha256": "b7e482ffbe6d1bd420d39932fc5dcbe1e298a824ae61e3f816c6c6e4dd8a9e36"
+    },
+    {
+      "path": "assets/images/image 3.png",
+      "bytes": 23100,
+      "sha256": "6707b460061ed0c317fe6153ca6ba67d24834ee21177df7e74d19f396110348e"
+    },
+    {
+      "path": "assets/images/image 4.png",
+      "bytes": 23642,
+      "sha256": "982dd95c78378b20747034035dfa18f5059f0cd785d8f003cad9cea1eafe1e8a"
+    },
+    {
+      "path": "assets/images/image 5.png",
+      "bytes": 9726,
+      "sha256": "c9f30fbd826c4fcd66eeb88f55ebf390cd1058aa9e746f8b404a1520d7ea916d"
+    },
+    {
+      "path": "assets/images/image 6.png",
+      "bytes": 6710,
+      "sha256": "465eaeb7cc483a0fbdf7fa0351857b21433e31f701d0fd7540e2e09720878520"
+    },
+    {
+      "path": "assets/images/image 7.png",
+      "bytes": 6897,
+      "sha256": "0587d814ab08a9f71f4e45b66c51f17a2c35f784f8d52e7b33c6fada4e5bad5c"
+    },
+    {
+      "path": "assets/images/image 8.png",
+      "bytes": 11211,
+      "sha256": "9a9d48f730302e69f3a853a14bcbfe80cc5b54ae0a602601959034cf845d08ad"
+    },
+    {
+      "path": "assets/images/image 9.png",
+      "bytes": 60309,
+      "sha256": "1cffacde5160eb39badbbb4ac940a399acff424f653321596a24d80057ce5540"
+    },
+    {
+      "path": "assets/images/image.png",
+      "bytes": 12932,
+      "sha256": "9c67e275c6a85fad8a57d5681b1d64119dcf2ff17e19d022f4bcb5857f3f0589"
+    },
+    {
+      "path": "assets/images/memory_profile.svg",
+      "bytes": 541520,
+      "sha256": "63f72d9f3a71192a208a8c1c3b37f5f7df96be10d5bb4ff4d7cea086e00016ba"
+    },
+    {
+      "path": "assets/images/memorycoalescing.png",
+      "bytes": 94117,
+      "sha256": "1094fe9aeb953c743791445ee6d7e73a5a89fa85fe60f4312266d1265e7c591a"
+    },
+    {
+      "path": "assets/images/memorycoalescing2.png",
+      "bytes": 17049,
+      "sha256": "bc6331384c3169c84d27bdb008deae9784a8bd73b993a60f19d1b6324b7a5117"
+    },
+    {
+      "path": "assets/images/memorycoalescing3.png",
+      "bytes": 24793,
+      "sha256": "340202fee18c1beffc74ceb751a2298240f608f1d3e984ce19ec483eddd780b2"
+    },
+    {
+      "path": "assets/images/memorycoalescing4.png",
+      "bytes": 18938,
+      "sha256": "4ccb99f796565d6d3187ed17e01129f6e85fda0bc310bb67670659f7c04deb69"
+    },
+    {
+      "path": "assets/images/memorycoalescing5.png",
+      "bytes": 16938,
+      "sha256": "b5c43c7412582c7fdeca4651c0d8e9d87fc3816724b3dd0c685b8709e5f50ee8"
+    },
+    {
+      "path": "assets/images/memusage_activations.svg",
+      "bytes": 50749,
+      "sha256": "35722cf510f1f14591a51016f611523e200c669892d557c68c41bfc50e2843b7"
+    },
+    {
+      "path": "assets/images/mixedprecision.png",
+      "bytes": 50561,
+      "sha256": "04db97d3ee947b41ae5b8f03d31de70e9d45c2af9346e937eac2fa5fea646c36"
+    },
+    {
+      "path": "assets/images/mixedprecision_2.png",
+      "bytes": 32989,
+      "sha256": "59e49df21ad585adcab060fd6da1c24de56bc775f80da4ddcd34c096bbb7fc04"
+    },
+    {
+      "path": "assets/images/moon.svg",
+      "bytes": 225,
+      "sha256": "f34c5c6c3ffc777e3fc8762e0ea6f71e443c6b728605b82de5c6676978caabcf"
+    },
+    {
+      "path": "assets/images/placeholder.png",
+      "bytes": 6053,
+      "sha256": "40eaf32e55f1f2c80092b2c48491ab98180816783c183e5b17519c8e9ae07d95"
+    },
+    {
+      "path": "assets/images/pp_1f1b.svg",
+      "bytes": 63605,
+      "sha256": "ad1ec638ad01babe1a7f333d38c6a219dd974ba17f9fbd165b1f8ba1f5830f97"
+    },
+    {
+      "path": "assets/images/pp_1f1b_interleaved.svg",
+      "bytes": 149106,
+      "sha256": "2217dd8b0b4d4df97d6a9753be58819db5775be9c492b33c880c6772dc146a29"
+    },
+    {
+      "path": "assets/images/pp_1f1b_scaling.png",
+      "bytes": 72565,
+      "sha256": "19589e092bf08bc1645e5ad84f14602e56aebfddbcea9921beee84eeabecc7a7"
+    },
+    {
+      "path": "assets/images/pp_afab.svg",
+      "bytes": 31298,
+      "sha256": "77ec73c2e4ed328175d6e7f95227bde4f61ad36ea5160c9faa3a23f4bffb2a6a"
+    },
+    {
+      "path": "assets/images/pp_afab2.svg",
+      "bytes": 66362,
+      "sha256": "cbafb2b63cd6e57bd90779fcec3138d06460d8d63777e8ee2845d180e9f86ac7"
+    },
+    {
+      "path": "assets/images/pp_bubblesize.png",
+      "bytes": 34328,
+      "sha256": "8a78eaabc8149fb861b182398e5a8cd247013fde063cd9a08ebcf7590260b009"
+    },
+    {
+      "path": "assets/images/pp_comm_bandwidth.svg",
+      "bytes": 31997,
+      "sha256": "e000b8b569cd9040d573f5c0a3b51014193a8dccf4dae5bf64f5f0edbc015725"
+    },
+    {
+      "path": "assets/images/pp_llama3.1_schedule.png",
+      "bytes": 42185,
+      "sha256": "a47a428b5a56340bd1f6f9779cd497ec6ddd1724c53f4b2b9a2c672fb20ead16"
+    },
+    {
+      "path": "assets/images/pp_memoryusage.svg",
+      "bytes": 33308,
+      "sha256": "379e6f1dd3408a11dcd9d30dc1f6bd7b26cd6aab5c6b23d4eda3aa8f166ee9f3"
+    },
+    {
+      "path": "assets/images/pp_zerobubble_compgraph.png",
+      "bytes": 13144,
+      "sha256": "cfbae942cda2ef30e746f4e0c655147d2e1a878bbf2f5fe4213ee76a5a237269"
+    },
+    {
+      "path": "assets/images/pp_zerobubble_dualpipe.png",
+      "bytes": 52468,
+      "sha256": "848833f63134b6eacf20a9f50465ff2f371598af2b51d85d0af45756ef51a9d0"
+    },
+    {
+      "path": "assets/images/pp_zerobubble_ppschedule.png",
+      "bytes": 34906,
+      "sha256": "24f998e701be46ebcbaa4c3a0fc104d13b8185c11b96652887380bfbeb1c9beb"
+    },
+    {
+      "path": "assets/images/predict_memory_tool.png",
+      "bytes": 26517,
+      "sha256": "a61828c60b0e39e57c3d050474889dc51c87f5fdaa6d5afa4ae7b55e329678b2"
+    },
+    {
+      "path": "assets/images/profile_trace_annotated.png",
+      "bytes": 323396,
+      "sha256": "cad15ef8de1c85662e98cf16891fc8770db29bbc1ec40d991012440228150180"
+    },
+    {
+      "path": "assets/images/ring-attention.gif",
+      "bytes": 199823,
+      "sha256": "d008657c7cb53ddc900bb40d0b22457b4036ae7d9ffc6166e98cfc9acd69d84c"
+    },
+    {
+      "path": "assets/images/rotation.jpeg",
+      "bytes": 60665,
+      "sha256": "373e8786ccd1f5aafd95ac794691e0e0cc67f1a5670bcb33f3dfc0dfcc953611"
+    },
+    {
+      "path": "assets/images/rotation_speed.jpeg",
+      "bytes": 127865,
+      "sha256": "55b234df155cfe54d0e84b550974896262b3cb6d12807e2b3c9dff0256864e8c"
+    },
+    {
+      "path": "assets/images/sign-mantissa-exponent.svg",
+      "bytes": 10669,
+      "sha256": "2af76409c57743efac722fb332c473288317d33202bdf7ad4a39f1ce02b4e5ff"
+    },
+    {
+      "path": "assets/images/sun.svg",
+      "bytes": 322,
+      "sha256": "22764957aeb62dd3bdda96afb97b9268438ac074aa067632cfee64a15e461445"
+    },
+    {
+      "path": "assets/images/threadcoarsening.png",
+      "bytes": 18680,
+      "sha256": "b723b71b3befc26812bab54fee8c48e942cda1e92ca045e22fa2ccb423443fdd"
+    },
+    {
+      "path": "assets/images/tiling.png",
+      "bytes": 4417,
+      "sha256": "ab949de4b9e9129630c42abfeeca83e85f2efcf8ded2358ad398342f32760e05"
+    },
+    {
+      "path": "assets/images/torch-compile-triton-kernel.png",
+      "bytes": 35549,
+      "sha256": "98158a5f39c96382232562d9c2a6edae83b0bd52b7b877d119b6cf25d9310bc0"
+    },
+    {
+      "path": "assets/images/torch-compile-triton.png",
+      "bytes": 30928,
+      "sha256": "40216bb41ef69f7f8a190fcfb55bbd517c3d5ff9ba068e1f246500334a8e1db9"
+    },
+    {
+      "path": "assets/images/tp_diagram.png",
+      "bytes": 7491,
+      "sha256": "6ceb511bf111f14f5a247999a24a0ca3505acccf07c877361224180d6dc48e39"
+    },
+    {
+      "path": "assets/images/tp_diagram.svg",
+      "bytes": 11560,
+      "sha256": "405f0edcc03708ee3b2d973fcb7c85930d9bef016ac0af9a5579d8672c2094dc"
+    },
+    {
+      "path": "assets/images/tp_diagram2.png",
+      "bytes": 89784,
+      "sha256": "92f1591b62f4f7eb8a059b973a379784523915386ee9f682e17e3ab43d4f494d"
+    },
+    {
+      "path": "assets/images/tp_diagram3.png",
+      "bytes": 86578,
+      "sha256": "e8a50a474efb1e4f59c182b5fc483e6c9f102d3b615dbdc2f47c7240a0d00496"
+    },
+    {
+      "path": "assets/images/tp_diagram4.png",
+      "bytes": 128831,
+      "sha256": "cb2772716631ff96aeab01b1eb6cc8e59927d4f30cba72d8ba506dcf326406c7"
+    },
+    {
+      "path": "assets/images/tp_full_diagram.png",
+      "bytes": 34642,
+      "sha256": "200daf8ade0c7f035d883fefa9a12d6ba7cca504b1d5571774748c3c90639103"
+    },
+    {
+      "path": "assets/images/tp_memoryusage.svg",
+      "bytes": 40687,
+      "sha256": "95e82569e061cbcfbaa69b2a1347d4040f8e107a7433546ded7d07e19fddd1c8"
+    },
+    {
+      "path": "assets/images/tp_overlap.svg",
+      "bytes": 28545,
+      "sha256": "ae864fce92260abfe69f3d0afee013062d791438b01546864313556a5b884258"
+    },
+    {
+      "path": "assets/images/tp_scaling.svg",
+      "bytes": 43141,
+      "sha256": "32290ea9b3e271029920d8fd24d252a5fd750dd4983cb970024348b0ca3def80"
+    },
+    {
+      "path": "assets/images/tp_sp_diagram.png",
+      "bytes": 39881,
+      "sha256": "c1971c363763da0015bf61cbc32183808f13b1c400c99c67e1ed5c8d9a2758e2"
+    },
+    {
+      "path": "assets/images/tp_sp_diagram_zoomed.png",
+      "bytes": 89958,
+      "sha256": "2b6810f81f217b801faf5cfebd3cc6ae24ab9c1e53d4d9110aaa9116f4b5ece0"
+    },
+    {
+      "path": "assets/images/tp_sp_memoryusage.svg",
+      "bytes": 44595,
+      "sha256": "6238d611ad1c4f0ccc037a9e42244ff455a20f1cd956eae32b25ca7c3e202123"
+    },
+    {
+      "path": "assets/images/tp_sp_overlap.svg",
+      "bytes": 39563,
+      "sha256": "74f544a8355abddd102a524e6882bedb260f6f8aee57f767cd280d956d608896"
+    },
+    {
+      "path": "assets/images/tp_sp_scaling.svg",
+      "bytes": 41316,
+      "sha256": "f5bb87fc2140f3e6ca0c5a16f9eb29b6fc5c44ac6d4c160b08ff8157a9d4d648"
+    },
+    {
+      "path": "assets/images/ultra-cheatsheet.svg",
+      "bytes": 1197218,
+      "sha256": "98c7a7dfa143becf752710c989f473d258329f9cb9433cd64ee3b2787cb50c82"
+    },
+    {
+      "path": "assets/images/what_we_learnt_heatmap.svg",
+      "bytes": 123564,
+      "sha256": "bb1936ed53151f305317d7eeee48c8adfd04fc5bcee4c03406a897b4fe304e6a"
+    },
+    {
+      "path": "assets/images/what_we_learnt_parallel_coordinates.html",
+      "bytes": 4653929,
+      "sha256": "2ece5dd9dd1a908eb1c2bf242d8003751615e3ea720be31c32a8cc00f4086333"
+    },
+    {
+      "path": "assets/images/what_we_learnt_parallel_coordinates.svg",
+      "bytes": 5095293,
+      "sha256": "bde0a67cd97262095e54d563526ffc17591cc31f5c67d526c325ea6ce886dce9"
+    },
+    {
+      "path": "assets/images/zero3_memoryusage.svg",
+      "bytes": 49612,
+      "sha256": "3887e90e3916cdebf5511430a9944720b2ad27564aa31e356134efb2272e04d2"
+    },
+    {
+      "path": "assets/images/zero_memory.svg",
+      "bytes": 266935,
+      "sha256": "95a611c3e6329963a72a2ca39092c466b58a9120b3e2bb6d9b9891ca85871b0f"
+    },
+    {
+      "path": "bibliography.bib",
+      "bytes": 38488,
+      "sha256": "4cb87692186629352c43c75af5da3b9286f60f7207203a4e71145fb48bbd38fd"
+    },
+    {
+      "path": "code/huggingface/picotron/0035cce0e04afd6192763b11efe50010d8ad0f71/picotron/pipeline_parallel/pipeline_parallel.py",
+      "bytes": 8677,
+      "sha256": "4b39e69fffb7639a88f76acb6cebfdda94a4e0ea66724edda31126b0b2308774"
+    },
+    {
+      "path": "code/huggingface/picotron/1004ae37b87887cde597c9060fb067faa060bafe/picotron/tensor_parallel/tensor_parallel.py",
+      "bytes": 11494,
+      "sha256": "c35a9c69d5a234872dc3bdef8f5ab0bc3943594545f71806c7adde0bc59ee931"
+    },
+    {
+      "path": "distill.bundle.js",
+      "bytes": 329212,
+      "sha256": "9e70fcaa9f1ce2b19556362ef9dc4e319a9230980c1e452ff660ead9d53dad47"
+    },
+    {
+      "path": "fragments/banner.html",
+      "bytes": 476354,
+      "sha256": "e770ebde2fc0cfd0d9283569d231367e980852be98df3903bceca7c213b279c0"
+    },
+    {
+      "path": "fragments/benchmarks_interactive.html",
+      "bytes": 1581913,
+      "sha256": "33d17d59dff3c8f9d55cc3bec3f2c34719a79d9159cc0c7307942ae38960ff38"
+    },
+    {
+      "path": "fragments/cp_8Bmemoryusage.html",
+      "bytes": 10741,
+      "sha256": "8cafaca86a2d92fc0475b558d895c5275b2c94efc556f04f6bfdd26d3b2adb8c"
+    },
+    {
+      "path": "fragments/dp_ourjourney_memoryusage.html",
+      "bytes": 10374,
+      "sha256": "432393a1b982fbe4269174c43c9476624be58d8ef45ffbaa5941d658db46b8e9"
+    },
+    {
+      "path": "fragments/dp_scaling.html",
+      "bytes": 9093,
+      "sha256": "39f6a6ad33a887e732885270d49ac4c8b06afb4a81bf8dd7785d667f5007b8a2"
+    },
+    {
+      "path": "fragments/memory-profile.html",
+      "bytes": 2301761,
+      "sha256": "8d9dbee9e350a4e921c902bbdd6d4083a794f00663557efc3b2362115b3d7390"
+    },
+    {
+      "path": "fragments/memory-recomputation.html",
+      "bytes": 17358,
+      "sha256": "729e942e48b75041459dcf92014483f7578867251d2d365abbb030393938f97f"
+    },
+    {
+      "path": "fragments/memusage_activations.html",
+      "bytes": 10553,
+      "sha256": "ad15078b3d83adc17be2f5455ee6925c8511e5bf02b322a838053acb8e26fa24"
+    },
+    {
+      "path": "fragments/pp_bubblesize.html",
+      "bytes": 8018,
+      "sha256": "882ac9e24e1234349538d9ca0eba8bf7c0143c36fb1ad521964b6d5d2d016bf9"
+    },
+    {
+      "path": "fragments/pp_comm_bandwidth.html",
+      "bytes": 8877,
+      "sha256": "a5ac31d07bcaa788a82f95fa7c5af526eebd00fff20f2171e50715e6da2b8d77"
+    },
+    {
+      "path": "fragments/pp_memoryusage.html",
+      "bytes": 9052,
+      "sha256": "8ea5d14b91c0526fe7b524fa4a6461b22814423780526ef068d492ac76b36199"
+    },
+    {
+      "path": "fragments/tp_memoryusage.html",
+      "bytes": 10186,
+      "sha256": "364c8c8ef7f85c746dde38f4784dd7730b9ee026eb2c167dcf8571a2851f5265"
+    },
+    {
+      "path": "fragments/tp_scaling.html",
+      "bytes": 8755,
+      "sha256": "8f08935976888b14d0e0c06efe231ba286bb7fcf612ba471886c7d23aea11a82"
+    },
+    {
+      "path": "fragments/tp_sp_memoryusage.html",
+      "bytes": 10209,
+      "sha256": "3ffe024c00bc7bb28d842907b25cd514da21fdbb907e82046dffba661265f603"
+    },
+    {
+      "path": "fragments/tp_sp_scaling.html",
+      "bytes": 8774,
+      "sha256": "255fb056cf54db21499170a2b4ce8d07a10bce83b219d9b76cee34ae81117d8c"
+    },
+    {
+      "path": "fragments/zero3_memoryusage.html",
+      "bytes": 11055,
+      "sha256": "f5289e8a107d49717d949ccbb2a4deaed1d6d679410baea166fa8adbaa00f781"
+    },
+    {
+      "path": "index.html",
+      "bytes": 800054,
+      "sha256": "d086a3d8860ca236358a71266594dd87e6547983a20b4a66b09bc9b85bd484a2"
+    },
+    {
+      "path": "main.bundle.js",
+      "bytes": 188995,
+      "sha256": "ced6e791c520ce78f7eabc34b6afe24d39cdfb9879662c852b547955b11bc164"
+    },
+    {
+      "path": "playbook.pdf",
+      "bytes": 14059172,
+      "sha256": "274a19a2577ed220cd3a102b4469c44310e4a7c8e8f8ebc36842d907cb51e127"
+    },
+    {
+      "path": "source-tree.json",
+      "bytes": 79897,
+      "sha256": "9d5c89291a71d5fecdf958c2feddcc643cf561ef7da262477ac47b8d53e92116"
+    },
+    {
+      "path": "source.html",
+      "bytes": 788673,
+      "sha256": "d2e85fbb8eeebfda70ef57caf3190b81dce4877a06cdf4b2067b91a786fa47fe"
+    },
+    {
+      "path": "style.css",
+      "bytes": 14479,
+      "sha256": "7e931a9d7f6b641cd6963866f72bf01317139c7445e98f3b98f45f1362db019d"
+    },
+    {
+      "path": "upstream.md",
+      "bytes": 209019,
+      "sha256": "37682cc16375a95a21d5dde45438983f8fbb02cac35b5931eeeb4a0ae9c40a74"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_AMS-Regular.eot",
+      "bytes": 71656,
+      "sha256": "0ca50506baa972f479594d95dbd2bf86e2f8a29307d07a6c239cd58ac14a5456"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_AMS-Regular.eot#iefix",
+      "bytes": 71656,
+      "sha256": "0ca50506baa972f479594d95dbd2bf86e2f8a29307d07a6c239cd58ac14a5456"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_AMS-Regular.ttf",
+      "bytes": 71428,
+      "sha256": "b2d9fa87a78c46d3277052b9eeb204272e6e5dc098f4b6f083036f58da25dfd6"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_AMS-Regular.woff",
+      "bytes": 40200,
+      "sha256": "6a6b7a7b281467831d9f8761bbcd2bfcd7039d18d56a53a2ba2c232dcdbc2dfd"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_AMS-Regular.woff2",
+      "bytes": 33188,
+      "sha256": "d728466fd44b2cbed7900e3e92ab80da94186e8cd517fdfd357c59215027da06"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Bold.eot",
+      "bytes": 19836,
+      "sha256": "34f3681a867dd38a2ff454ec8afed34f8ddc196c0ceb858b38cea34d48504507"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Bold.eot#iefix",
+      "bytes": 19836,
+      "sha256": "34f3681a867dd38a2ff454ec8afed34f8ddc196c0ceb858b38cea34d48504507"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Bold.ttf",
+      "bytes": 19588,
+      "sha256": "459bdcf63a3840802d0401089a280e76a32294abc69fec4c8cdbe5a9a3caa570"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Bold.woff",
+      "bytes": 12136,
+      "sha256": "008927b03149863af799049c7b43294d731783cbe880aeaeac13ce25dc43de58"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Bold.woff2",
+      "bytes": 10604,
+      "sha256": "ca171d351b0e121c2d6dbe03dfe1f9cc76d742896da85c4f200c65dd10d09208"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Regular.eot",
+      "bytes": 19220,
+      "sha256": "88f36891f47b5b1bcf9a7a63d578c04508732a79b11add074d140dc179755ba1"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Regular.eot#iefix",
+      "bytes": 19220,
+      "sha256": "88f36891f47b5b1bcf9a7a63d578c04508732a79b11add074d140dc179755ba1"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Regular.ttf",
+      "bytes": 18960,
+      "sha256": "7d68fac56dc3e8cc1c4a156971a61fe402f9b73181f2a43d18ae59f2e3a76e43"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Regular.woff",
+      "bytes": 11868,
+      "sha256": "0e42a4b6474559b39362646f9cc1b5eb3d28a8c3becf48f33b965a1bc6071a9b"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Caligraphic-Regular.woff2",
+      "bytes": 10396,
+      "sha256": "d92a43077a3181f1eeed97520581d9f1ceaec435f38640e116385e6918966c4d"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Bold.eot",
+      "bytes": 36200,
+      "sha256": "0509488a4d0dc07c86b21382a5a4f7b441c5d07300ef7c29ada73ec278239d56"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Bold.eot#iefix",
+      "bytes": 36200,
+      "sha256": "0509488a4d0dc07c86b21382a5a4f7b441c5d07300ef7c29ada73ec278239d56"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Bold.ttf",
+      "bytes": 35968,
+      "sha256": "20186af5b4da73a79ef6155f76b22cb04fb648ed78c355b650b9718d49963cf5"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Bold.woff",
+      "bytes": 23388,
+      "sha256": "2b273844209aa597a68f63294a384a1f122f7e6b99deae7dedaf128d2b10c6bf"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Bold.woff2",
+      "bytes": 20476,
+      "sha256": "0b05f41deb49abdaf462e501ad3432c59b43eacfb47d540da242474c10a6fbf6"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Regular.eot",
+      "bytes": 34896,
+      "sha256": "27acf4a4dc79ff1ce64acebfd1f5db97d565755a54728eab05b5a916d3231651"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Regular.eot#iefix",
+      "bytes": 34896,
+      "sha256": "27acf4a4dc79ff1ce64acebfd1f5db97d565755a54728eab05b5a916d3231651"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Regular.ttf",
+      "bytes": 34652,
+      "sha256": "3879bec97ae2820076782475eb0b48530abc9705e2362628a4b4ae47032195bd"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Regular.woff",
+      "bytes": 22844,
+      "sha256": "eb1704688fce0b409cac349f21736f5dce878896c813901159b61e4f1fc76b22"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Fraktur-Regular.woff2",
+      "bytes": 19868,
+      "sha256": "e3129625ee0f734bf273c98b7c2d53dfd6cc849ec962d76c2697b405355d2755"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Bold.eot",
+      "bytes": 60688,
+      "sha256": "5eec6e6bdd17903e54dc9ade3152866aa04d2d35aaf783b79f37700a98dd2b6c"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Bold.eot#iefix",
+      "bytes": 60688,
+      "sha256": "5eec6e6bdd17903e54dc9ade3152866aa04d2d35aaf783b79f37700a98dd2b6c"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Bold.ttf",
+      "bytes": 60468,
+      "sha256": "6722bc6c6d95f3b5ba162f34705e343f3cb1fa263671c997c236f8247f2e6800"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Bold.woff",
+      "bytes": 35480,
+      "sha256": "5a0d8c32be320667831bc5450f2cb243576a18fd38dc8fbb0e4995f126b20422"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Bold.woff2",
+      "bytes": 29492,
+      "sha256": "f14fb86c521fdcb0ce9ded435dd5e01f265372a049b085059c5aeb509413b26e"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Italic.eot",
+      "bytes": 44132,
+      "sha256": "a34cfedff1b92cb556dec5ff2ed490ae4a2569cdac972d37ab6e05014990659c"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Italic.eot#iefix",
+      "bytes": 44132,
+      "sha256": "a34cfedff1b92cb556dec5ff2ed490ae4a2569cdac972d37ab6e05014990659c"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Italic.ttf",
+      "bytes": 43904,
+      "sha256": "1bac98fcd5975d20260ed3828e213c318654ca2a7568ff2ea9c3bf5384c1a1d9"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Italic.woff",
+      "bytes": 24880,
+      "sha256": "d1459a507feeef6aa808fe9e152cc32b9e9af348170a18746136839f93f07949"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Italic.woff2",
+      "bytes": 21032,
+      "sha256": "f2d5f3279bd91e9d3ee669f6c73525b5696ba546792add7063be0fe5b025a423"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Regular.eot",
+      "bytes": 68228,
+      "sha256": "67034028daa9821527985b157231043feee55ed7872ea165ec0892dfc2ceff02"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Regular.eot#iefix",
+      "bytes": 68228,
+      "sha256": "67034028daa9821527985b157231043feee55ed7872ea165ec0892dfc2ceff02"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Regular.ttf",
+      "bytes": 67996,
+      "sha256": "8a69578a68af468c4ca238a652185a6968691ed7bf3d73d6322ff10b78d56ced"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Regular.woff",
+      "bytes": 37620,
+      "sha256": "016afc3b63046b0602f89e2d6e32251370da220b56f260d8077d6fb4071c65a1"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Main-Regular.woff2",
+      "bytes": 31220,
+      "sha256": "15acf74f7b49f0e1684532d3b16624880610e0ce41e4518696dc6568fcf0612e"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Math-Italic.eot",
+      "bytes": 41676,
+      "sha256": "cd90b0722d6bf66b6b557a527fbdca8337298dc1886f420ec07d8a739c0725ea"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Math-Italic.eot#iefix",
+      "bytes": 41676,
+      "sha256": "cd90b0722d6bf66b6b557a527fbdca8337298dc1886f420ec07d8a739c0725ea"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Math-Italic.ttf",
+      "bytes": 41448,
+      "sha256": "ffdaa1496fa0f34f718b50929afb4e544dea397492d6765f945249b605fe4886"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Math-Italic.woff",
+      "bytes": 23820,
+      "sha256": "40c45e2019e904bbbee2f6e9d9dc90ec669739323fee7276024b5076aa18ca0a"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Math-Italic.woff2",
+      "bytes": 20432,
+      "sha256": "812f4c094e7c8c3bcca4f5da54222b491be4b7c8071f8dc19f2ecc92c7f21e99"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_SansSerif-Regular.eot",
+      "bytes": 30212,
+      "sha256": "01c8db29e2ba618d7fe1cc7b8cb0d4cfeeeb5769baea4157df8a52beefbb30e9"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_SansSerif-Regular.eot#iefix",
+      "bytes": 30212,
+      "sha256": "01c8db29e2ba618d7fe1cc7b8cb0d4cfeeeb5769baea4157df8a52beefbb30e9"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_SansSerif-Regular.ttf",
+      "bytes": 29960,
+      "sha256": "d41c14bb5ad1db9bd830822f28c45f8c998e27257b429d45c2e66199b52c9afe"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_SansSerif-Regular.woff",
+      "bytes": 16744,
+      "sha256": "1ef0b02e9b8fddba5a8584a9f0daefafde1c8a6a6ab57c6a5503f5d2eca8dbda"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_SansSerif-Regular.woff2",
+      "bytes": 13908,
+      "sha256": "884457a042c854c6ecceb384f383894d90e9bc1fbf287d9d0272954821c2453f"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Script-Regular.eot",
+      "bytes": 25104,
+      "sha256": "956b48558dfa2dc3fb0d498ef68f51f36e0601b32d2d8bf9c1f09c93e6ba03db"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Script-Regular.eot#iefix",
+      "bytes": 25104,
+      "sha256": "956b48558dfa2dc3fb0d498ef68f51f36e0601b32d2d8bf9c1f09c93e6ba03db"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Script-Regular.ttf",
+      "bytes": 24864,
+      "sha256": "e9db5630da8ecc30d0c1865db6aa897725b2e13541fe4625cfd9fb0e2ad950ad"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Script-Regular.woff",
+      "bytes": 13856,
+      "sha256": "1e6d6ebc14842070d1ce5e50960140039320ac64609986a42cfc520ea68b9fe5"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Script-Regular.woff2",
+      "bytes": 12276,
+      "sha256": "6fde2d4adb1b6bc3d2f28bac1397312bdf40e5244801dcbd0e103a82a5fd83f2"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size1-Regular.eot",
+      "bytes": 13408,
+      "sha256": "390ed74fb0824d9fdd54ec815e9b4b077d91572d64fc152cd46163a3e76fb46b"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size1-Regular.eot#iefix",
+      "bytes": 13408,
+      "sha256": "390ed74fb0824d9fdd54ec815e9b4b077d91572d64fc152cd46163a3e76fb46b"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size1-Regular.ttf",
+      "bytes": 13172,
+      "sha256": "b2a487fd51620e06b224a4158d0ccff3679e4a68b281ce5edfc7420b2ef20845"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size1-Regular.woff",
+      "bytes": 6980,
+      "sha256": "11a78fa143fd42301f549758849370da797b0aa35f3925bbb88619acc19a68ba"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size1-Regular.woff2",
+      "bytes": 5820,
+      "sha256": "f3f0f6e8fb2073e330c6b20bb95b4895a0985fef1835a219224a151aadc31793"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size2-Regular.eot",
+      "bytes": 12648,
+      "sha256": "2cdc93658e12734e66adff00b0e82d5105ba5a70d9b2f50fa50b76aee6267b44"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size2-Regular.eot#iefix",
+      "bytes": 12648,
+      "sha256": "2cdc93658e12734e66adff00b0e82d5105ba5a70d9b2f50fa50b76aee6267b44"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size2-Regular.ttf",
+      "bytes": 12412,
+      "sha256": "a7631dfe52f0c0e0534daa7d2182ebf239b8fe38d39ffded184fd4882ef179cf"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size2-Regular.woff",
+      "bytes": 6684,
+      "sha256": "3ae10fa0f5b394943263e3e533fe5b306780079dab7027a2e58930b29da853bf"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size2-Regular.woff2",
+      "bytes": 5560,
+      "sha256": "1c10228b5ec390dd72c64522414071aaf791b1bbf426daaa9b94ac2cb079c256"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size3-Regular.eot",
+      "bytes": 8596,
+      "sha256": "bae9395180c2b896374eed2aa4a39720d66f73089618fa3458f0068374a6979a"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size3-Regular.eot#iefix",
+      "bytes": 8596,
+      "sha256": "bae9395180c2b896374eed2aa4a39720d66f73089618fa3458f0068374a6979a"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size3-Regular.ttf",
+      "bytes": 8360,
+      "sha256": "d1cbc7c6cb377fad9b9650d7bebf5c67b6aa03f44cbaedce75dce567da5598f9"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size3-Regular.woff",
+      "bytes": 4776,
+      "sha256": "509137a926f674a920b5176076b45767ebf0692b42bb9095fef3bb1bc274f9cb"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size3-Regular.woff2",
+      "bytes": 3856,
+      "sha256": "9d5935ef890057bed74d8bc020e4204c3f1373a8bfeaddf7ab7fca902e5ff202"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size4-Regular.eot",
+      "bytes": 11520,
+      "sha256": "6fa7e07d479fa0273944ad8ea2e9a94dac87640d00c1ff355b9c5b8822f7b7b2"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size4-Regular.eot#iefix",
+      "bytes": 11520,
+      "sha256": "6fa7e07d479fa0273944ad8ea2e9a94dac87640d00c1ff355b9c5b8822f7b7b2"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size4-Regular.ttf",
+      "bytes": 11284,
+      "sha256": "fbe14073ea57f03a22da381437156cc56ffc9209810d22a88455816c3f876f2e"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size4-Regular.woff",
+      "bytes": 6456,
+      "sha256": "b4e0bf91223ce0a0d654f4ebd26db88a5cff3c0c0e5d3185cd5ecad7f88347ce"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Size4-Regular.woff2",
+      "bytes": 5172,
+      "sha256": "20bc63188ec455ce4721a6b02514cb704de1e2ebc280ad97c308a57475174e37"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Typewriter-Regular.eot",
+      "bytes": 35784,
+      "sha256": "17d25dca981cc2b3a7e89af003f8f59dc2b0b8a181b59883da60279df83a50fe"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Typewriter-Regular.eot#iefix",
+      "bytes": 35784,
+      "sha256": "17d25dca981cc2b3a7e89af003f8f59dc2b0b8a181b59883da60279df83a50fe"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Typewriter-Regular.ttf",
+      "bytes": 35528,
+      "sha256": "025d23e861f61a65304f7d86cad4cf66e4c6aeda363b868e36a93e873992cd8f"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Typewriter-Regular.woff",
+      "bytes": 20712,
+      "sha256": "1413ff97f15c612820e09cc98c5c6a4c052ce73fe5c1d0cc37c1721ad45676bb"
+    },
+    {
+      "path": "vendor/katex/fonts/KaTeX_Typewriter-Regular.woff2",
+      "bytes": 17344,
+      "sha256": "b9143a753160025538aa78f1373d3602fbca9c9310324a3b50b941a6b943b97a"
+    },
+    {
+      "path": "vendor/katex/katex.min.css",
+      "bytes": 23126,
+      "sha256": "9006d7f59e593218e8df83d118431ced18ae79ebe56e60e296f52dd4db191802"
+    },
+    {
+      "path": "vendor/katex/katex.min.js",
+      "bytes": 179685,
+      "sha256": "26fe55ad21d8c71066875f21414be20783a25733a40c774ed2e6381adac23034"
+    },
+    {
+      "path": "vendor/plotly.min.js",
+      "bytes": 4652792,
+      "sha256": "07d3b4351f6ebcd9e3890e57a1e0f0cac4336178186e681b5ff6e3f44c89a29d"
+    },
+    {
+      "path": "vendor/polyfills/intersection-observer.js",
+      "bytes": 21802,
+      "sha256": "f8379fde08e3df1da1f76b870cd69354887b5739cb9694bd65da02762a1b4af7"
+    },
+    {
+      "path": "vendor/polyfills/webcomponents-lite.js",
+      "bytes": 85401,
+      "sha256": "a0dd8935f74d8c5da0b1ad1a457220c72005050dc95e9dae0966dbefa615c36d"
+    }
+  ]
+}
