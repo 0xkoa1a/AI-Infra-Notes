@@ -4,6 +4,9 @@
 
 保存整篇文档，原链接定位的 Tensor Parallelism 也包含在内。英文原文保留。中文译文统一存放于 `notes/ultrascale-playbook/`，并接入知识库导航。
 
+- [开篇介绍中文译文](../../notes/ultrascale-playbook/introduction.md)。
+- [总体概览中文译文](../../notes/ultrascale-playbook/high-level-overview.md)。
+- [单 GPU 训练中文译文](../../notes/ultrascale-playbook/first-steps.md)：包含显存占用、激活重计算、梯度累积和性能剖析。
 - [数据并行中文译文](../../notes/ultrascale-playbook/data-parallelism.md)：包含 DP 和 ZeRO，按网页原文逐句翻译。
 - [张量并行中文译文](../../notes/ultrascale-playbook/tensor-parallelism.md)：包含 TP 和 SP，按网页原文逐句翻译。
 - [上下文并行中文译文](../../notes/ultrascale-playbook/context-parallelism.md)：按网页原文逐句翻译。
