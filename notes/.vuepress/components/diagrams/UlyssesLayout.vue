@@ -44,7 +44,7 @@ const localSteps = [
     <div class="scroll" role="region" tabindex="0" aria-label="按执行顺序从上到下阅读，可横向滚动">
       <svg viewBox="0 0 780 980" role="img" :aria-labelledby="`${id}-title ${id}-desc`">
         <title :id="`${id}-title`">QKV 投影 → AllToAll → Attention → AllToAll → 输出投影</title>
-        <desc :id="`${id}-desc`">两列分别为 Rank 0 和 Rank 1，每列上方的 WQKV 和 WO 都是完整权重副本，贯穿整个流程，不参与 AllToAll。例子有四个 token、四个 heads，每个 head 一维。开始时两卡分别持有 token 零到一、二到三的完整隐藏特征。使用完整 WQKV 做本地投影后，两卡各生成本地 token 的全部 Q、K、V heads。第一次 AllToAll 后，Rank 0 持有所有 token 的 head 零到一，Rank 1 持有所有 token 的 head 二到三。各卡完成本地 Attention。第二次 AllToAll 将 O 恢复为各卡原先的 token、全部 heads。最后各卡读取完整 WO 做本地输出投影，得到对应 token 的完整 Y。灰色虚线表示投影读取权重；蓝色和橙色标识 head 分组。各行展示该阶段主要激活，不表示前面所有激活同时驻留，也不表示实测耗时。</desc>
+        <desc :id="`${id}-desc`">两列分别为 Rank 0 和 Rank 1，每列上方的 WQKV 和 WO 都是完整权重副本，贯穿整个流程。例子有四个 token、四个 heads，每个 head 一维。开始时两卡分别持有 token 零到一、二到三的完整隐藏特征。使用完整 WQKV 做本地投影后，两卡各生成本地 token 的全部 Q、K、V heads。第一次 AllToAll 后，Rank 0 持有所有 token 的 head 零到一，Rank 1 持有所有 token 的 head 二到三。各卡完成本地 Attention。第二次 AllToAll 将 O 恢复为各卡原先的 token、全部 heads。最后各卡读取完整 WO 做本地输出投影，得到对应 token 的完整 Y。灰色虚线表示投影读取权重；蓝色和橙色标识 head 分组。各行按前向执行顺序展示主要激活。</desc>
         <defs>
           <marker v-for="head in ranks" :id="`${id}-head-${head}`" :key="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
             <path d="M0 0 L10 5 L0 10 Z" :class="`arrowhead head${head}`" />
@@ -55,7 +55,7 @@ const localSteps = [
         </defs>
 
         <text x="450" y="24" class="label note">权重完整复制 · 全程保留</text>
-        <text x="80" y="174" class="label note">执行顺序 ↓</text>
+        <text x="80" y="174" class="label note">前向数据流 ↓</text>
         <g v-for="rank in ranks" :key="rank">
           <rect :x="160 + rank * 300" y="40" width="280" height="930" rx="10" class="rank-panel" />
           <text :x="300 + rank * 300" y="66" class="label strong">Rank {{ rank }}</text>
@@ -96,7 +96,7 @@ const localSteps = [
         <path v-for="edge in exchanges" :key="edge.d" :d="edge.d" :class="`exchange head${edge.head}`" :marker-end="`url(#${id}-head-${edge.head})`" />
       </svg>
     </div>
-    <figcaption>颜色跟踪 head 分组；虚线表示权重读取。各行只画该阶段主要激活，间距不表示耗时。</figcaption>
+    <figcaption>颜色：head 分组；虚线：权重读取。</figcaption>
   </figure>
 </template>
 

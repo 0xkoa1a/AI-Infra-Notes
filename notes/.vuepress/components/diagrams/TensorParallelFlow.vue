@@ -74,15 +74,15 @@ function featureLabel(s: State, rank: number) {
     <div class="scroll" role="region" tabindex="0" aria-label="从上到下追踪两个 Rank 的数据分布，可横向滚动">
       <svg :viewBox="`0 0 780 ${height}`" role="img" :aria-labelledby="`${id}-title ${id}-desc`">
         <title :id="`${id}-title`">{{ moduleName }} · {{ sequence ? 'TP+SP：先 AllGather，最后 ReduceScatter' : 'TP：完整输入，最后 AllReduce' }}</title>
-        <desc :id="`${id}-desc`">两列对应两个 Rank，权重区只有着色分片在本卡，淡框用于定位全局矩阵。{{ attention ? 'Q、K、V 权重各沿列切分，WO 沿行切分；每卡负责两个 heads。' : 'W1 沿列切分，W2 沿对应行切分；每卡负责四个中间特征。' }}权重分片全程保留，两种模式相同。{{ sequence ? '开始时每卡只有两个 token，AllGather 后每卡获得全部四个 token。' : '开始时每卡持有全部四个 token。' }}{{ attention ? '分片的 QKV 投影生成所有 token、部分 heads 的 QKV。本地 Attention 后，WO 的行分片产生局部贡献 P。' : '第一层生成所有 token 的部分中间特征，逐元素激活后，第二层行分片产生局部贡献 P。' }}P 有完整输出形状，但数值尚未归约，以斜线标记。{{ sequence ? 'ReduceScatter 将两卡贡献求和后，分别输出 token 零到一和二到三。' : 'AllReduce 将两卡贡献求和，每卡得到全部 token 的结果。' }}Σ 表示逻辑求和，连线不是具体通信算法。各行仅展示阶段主要激活，间距不是耗时。</desc>
+        <desc :id="`${id}-desc`">两列对应两个 Rank，着色区为本卡保存的权重分片，淡框定位全局矩阵。{{ attention ? 'Q、K、V 权重各沿列切分，WO 沿行切分；每卡负责两个 heads。' : 'W1 沿列切分，W2 沿对应行切分；每卡负责四个中间特征。' }}权重分片全程保留，两种模式相同。{{ sequence ? '开始时每卡持有两个 token，AllGather 后每卡获得全部四个 token。' : '开始时每卡持有全部四个 token。' }}{{ attention ? '分片的 QKV 投影生成所有 token、部分 heads 的 QKV。本地 Attention 后，WO 的行分片产生部分和 P。' : '第一层生成所有 token 的部分中间特征，逐元素激活后，第二层行分片产生部分和 P。' }}P 保存本卡算出的部分和，用斜线标记。{{ sequence ? 'ReduceScatter 将两卡的部分和相加后，分别输出 token 零到一和二到三。' : 'AllReduce 将两卡的部分和相加，每卡得到全部 token 的结果。' }}Σ 表示逐元素相加，连线表示数据依赖，各行按前向执行顺序排列。</desc>
         <defs>
           <marker :id="`${id}-neutral`" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="neutral-head" /></marker>
           <marker v-for="rank in ranks" :id="`${id}-rank-${rank}`" :key="rank" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" :class="`arrowhead rank${rank}`" /></marker>
           <marker :id="`${id}-result`" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="result-head" /></marker>
           <pattern :id="`${id}-partial`" width="7" height="7" patternUnits="userSpaceOnUse"><path d="M0 7 L7 0" class="hatch" /></pattern>
         </defs>
-        <text x="450" y="24" class="label note">权重仅保留着色分片 · 全程不变</text>
-        <text x="80" y="204" class="label note">执行顺序 ↓</text>
+        <text x="450" y="24" class="label note">权重分片 · 全程保留</text>
+        <text x="80" y="204" class="label note">前向数据流 ↓</text>
         <g v-for="rank in ranks" :key="rank">
           <rect :x="160 + rank * 300" y="40" width="280" :height="height - 50" rx="10" class="rank-panel" />
           <text :x="300 + rank * 300" y="66" class="label strong">Rank {{ rank }}</text>
@@ -141,7 +141,7 @@ function featureLabel(s: State, rank: number) {
         </g>
       </svg>
     </div>
-    <figcaption>淡框：未持有的权重；斜线：未归约贡献；Σ：逻辑求和；虚线：读取权重。各行仅展示阶段主要激活，间距不表示耗时。</figcaption>
+    <figcaption>权重淡框定位全局矩阵，着色部分为本卡分片；斜线 P⁽ʳ⁾：本卡的部分和；Σ：逐元素相加；虚线：权重读取。</figcaption>
   </figure>
 </template>
 

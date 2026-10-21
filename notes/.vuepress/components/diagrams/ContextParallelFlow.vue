@@ -49,13 +49,13 @@ const weightGrids = computed(() => attention.value ? [
     <div class="scroll" role="region" tabindex="0" aria-label="两个 Rank 的激活与完整权重，从上到下阅读，可横向滚动">
       <svg :viewBox="`0 0 880 ${height}`" role="img" :aria-labelledby="`${id}-title ${id}-desc`">
         <title :id="`${id}-title`">{{ attention ? 'Ring CP：Q 留在本卡，KV 逐轮流入' : 'CP MLP：各自处理本地 token，全程无激活通信' }}</title>
-        <desc :id="`${id}-desc`">两卡将四个 token 均分，每卡完整复制权重，激活的列维保持完整。{{ attention ? '图采用无因果 mask 的 MHA。QKV 投影后，先用本地 KV 更新本地 m、l、A 状态。随后两卡交换 KV，用同一份本地 Q 和收到的远端 KV 继续更新状态。A 除以 l 得到本地 O，再用完整 WO 得到本地 Y。每卡负责不同 token 的输出。Q 通过旁路连接两个 Block Attention，累积状态通过竖直箭头延续，只有 KV 跨 Rank。' : 'W1 将本地两个 token 投影到完整中间维度 I，逐元素激活后，完整 W2 将其投影回 H。各卡输出仍对应原来的 token。' }}虚线表示读取权重。阶段间距不代表耗时，图不展示反向传播保存的全部激活。</desc>
+        <desc :id="`${id}-desc`">两卡将四个 token 均分，每卡完整复制权重，激活的列维保持完整。{{ attention ? '图采用无因果 mask 的 MHA。QKV 投影后，先用本地 KV 更新本地 m、l、A 状态。随后两卡交换 KV，用同一份本地 Q 和收到的远端 KV 继续更新状态。A 除以 l 得到本地 O，再用完整 WO 得到本地 Y。每卡负责不同 token 的输出。Q 通过旁路连接两个 Block Attention，累积状态通过竖直箭头延续，KV 跨 Rank 传递。' : 'W1 将本地两个 token 投影到完整中间维度 I，逐元素激活后，完整 W2 将其投影回 H。各卡输出仍对应原来的 token。' }}虚线表示读取权重，各行按前向执行顺序展示主要激活。</desc>
         <defs>
           <marker :id="`${id}-neutral`" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="neutral-head" /></marker>
           <marker v-for="rank in ranks" :id="`${id}-rank-${rank}`" :key="rank" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" :class="`arrowhead owner${rank}`" /></marker>
         </defs>
         <text x="505" y="24" class="label note">完整权重 · 每卡复制 · 全程保留</text>
-        <text x="80" y="208" class="label note">执行顺序 ↓</text>
+        <text x="80" y="208" class="label note">前向数据流 ↓</text>
         <g v-for="rank in ranks" :key="rank">
           <rect :x="center(rank) - 155" y="40" width="310" :height="height - 50" rx="10" class="rank-panel" />
           <text :x="center(rank)" y="66" class="label strong">Rank {{ rank }}</text>
@@ -121,7 +121,7 @@ const weightGrids = computed(() => attention.value ? [
         </g>
       </svg>
     </div>
-    <figcaption>颜色：token 所属 Rank；虚线：读取权重。{{ attention ? 'K/V 叠片；A、m、l 在本卡逐轮更新。' : '' }}各行仅展示主要激活，间距不表示耗时。</figcaption>
+    <figcaption>颜色：token 所属 Rank；虚线：权重读取。{{ attention ? '叠片代表 K、V。' : '' }}</figcaption>
   </figure>
 </template>
 

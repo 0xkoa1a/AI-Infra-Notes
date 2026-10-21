@@ -19,7 +19,7 @@ const work = (chunk: number) => chunk + 0.5
     <div class="scroll" role="region" tabindex="0" aria-label="因果注意力矩阵及每 Rank 的计算量，可横向滚动">
       <svg viewBox="0 0 800 390" role="img" :aria-labelledby="`${id}-title ${id}-desc`">
         <title :id="`${id}-title`">{{ zigzag ? 'Zig-Zag：每卡分得早晚各一块' : '连续分片：靠后 Rank 承担更多计算' }}</title>
-        <desc :id="`${id}-desc`">四个 Rank 分配八个等长序列块，矩阵行是 Query 块，列是 KV 块，颜色表示 Query 所属 Rank。未来位置为空，块内下三角用半个方格表示。右侧用相同尺度展示各 Rank 的有效计算面积。{{ zigzag ? '依次分配 C0与C7、C1与C6、C2与C5、C3与C4，每卡均约八个完整块面积。' : '依次分配 C0与C1、C2与C3、C4与C5、C6与C7，各卡约为二、六、十、十四个完整块面积。' }}这是大块近似的计算量模型，不是实测时间。</desc>
+        <desc :id="`${id}-desc`">四个 Rank 分配八个等长序列块，矩阵行是 Query 块，列是 KV 块，颜色表示 Query 所属 Rank。未来位置为空，块内下三角用半个方格表示。右侧用相同尺度展示各 Rank 的有效计算面积。{{ zigzag ? '依次分配 C0与C7、C1与C6、C2与C5、C3与C4，每卡均约八个完整块面积。' : '依次分配 C0与C1、C2与C3、C4与C5、C6与C7，各卡约为二、六、十、十四个完整块面积。' }}计算量按大块近似，以一个完整块的计算面积为单位。</desc>
         <text x="204" y="28" class="label">KV 块</text>
         <text x="35" y="205" class="label" transform="rotate(-90 35 205)">Query 块</text>
         <g v-for="q in chunks" :key="q" :transform="`translate(80,${60 + q * 34})`">
@@ -48,7 +48,7 @@ const work = (chunk: number) => chunk + 0.5
         <text x="440" y="367" class="label small">同一尺度 · 1 单位 ≈ 一个完整块的计算面积</text>
       </svg>
     </div>
-    <figcaption>颜色表示 Query 所属 Rank；每卡两块、token 数相同。计算量采用块内下三角约占一半的近似。</figcaption>
+    <figcaption>颜色：Query 所属 Rank；块内下三角按半个块估算。</figcaption>
   </figure>
 </template>
 
