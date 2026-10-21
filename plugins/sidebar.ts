@@ -26,6 +26,7 @@ const SECTIONS: Section[] = [
   { directory: "compiler", text: "算子编译" },
   { directory: "model", text: "Model" },
   { directory: "parallel", text: "Parallel" },
+  { directory: "ultrascale-playbook", text: "Ultra-Scale Playbook 中文译文" },
   { directory: "flash-attn", text: "FlashAttention" },
   { directory: "MoE-Overlap", text: "MoE Overlap" },
 ];

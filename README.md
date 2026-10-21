@@ -42,6 +42,8 @@ order: 1
 
 专题目录中的 Markdown 会按 `order` 自动加入左侧导航；新增一级专题目录时，在 `plugins/sidebar.ts` 的 `SECTIONS` 中登记一次。图片放在所属专题旁的 `images/` 目录，并使用相对路径引用。
 
+Ultra-Scale Playbook 的中文译文统一放在 `notes/ultrascale-playbook/`，后续章节继续放入该目录；配图放在其中的 `images/`，按原书章节顺序设置 `order`。英文原文、PDF 和网页归档保留在 `references/ultrascale-playbook/`。
+
 根目录的 `README.md`、`TODO.md`、源码仓、PDF/PPTX 和附件不属于站点输入。生成的 `_site/`、VuePress 缓存和 `node_modules/` 不进入 Git。
 
 ## 导出单篇笔记

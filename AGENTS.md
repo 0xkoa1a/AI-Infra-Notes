@@ -14,6 +14,7 @@
 - Do not add article-local `<style>` blocks or complex Raw HTML for layout. Move presentation code into `notes/.vuepress/components/` and keep the Markdown invocation small.
 - Keep `text` fences only when monospaced spatial layout is itself meaningful. Do not mechanically convert source code, pseudocode, or useful ASCII diagrams.
 - Prefer the site-level Mermaid theme and shared `--infra-*` semantic tokens over per-article decorative styling.
+- Keep all Ultra-Scale Playbook Chinese chapter translations in `notes/ultrascale-playbook/`, with local figures in its `images/` directory and chapter-order frontmatter. Preserve sentence-by-sentence correspondence with the source; do not add explanations or translator notes. Keep the English source archive in `references/ultrascale-playbook/`.
 
 ## Diagram components
 

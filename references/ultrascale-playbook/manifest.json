@@ -4,8 +4,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 2377,
-      "sha256": "655c7ded49093eeb99ef486c2f4e55c8c2ab6f4e8b0df9d30f181da3a52da445"
+      "bytes": 2515,
+      "sha256": "e6ce446cc8db51aee89b667cd622cdfe0b3098da68964a4c97f8267fbc6c14a1"
     },
     {
       "path": "assets/data/benchmarks/banner.html",
@@ -778,11 +778,6 @@
       "sha256": "c35a9c69d5a234872dc3bdef8f5ab0bc3943594545f71806c7adde0bc59ee931"
     },
     {
-      "path": "context-parallelism.zh-CN.md",
-      "bytes": 7570,
-      "sha256": "3afdca4e0b13c0edbf8d50218b58ab5a32d84ab1f531a87f7d40a60314a729f5"
-    },
-    {
       "path": "distill.bundle.js",
       "bytes": 329212,
       "sha256": "9e70fcaa9f1ce2b19556362ef9dc4e319a9230980c1e452ff660ead9d53dad47"
@@ -896,11 +891,6 @@
       "path": "style.css",
       "bytes": 14479,
       "sha256": "7e931a9d7f6b641cd6963866f72bf01317139c7445e98f3b98f45f1362db019d"
-    },
-    {
-      "path": "tensor-parallelism.zh-CN.md",
-      "bytes": 24548,
-      "sha256": "82bf04aa249204c1bd7b8cbd987466e669e8955af88094abb07616db83f57820"
     },
     {
       "path": "upstream.md",
