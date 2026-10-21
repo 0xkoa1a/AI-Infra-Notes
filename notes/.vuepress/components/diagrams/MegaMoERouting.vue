@@ -6,6 +6,7 @@ const id = useId()
 const gpu = ref(0)
 const tokenIndex = ref(0)
 const step = ref(0)
+const indicesFilled = ref(false)
 const ranks = [0, 1, 2, 3]
 const cx = (rank: number) => 140 + rank * 240
 type Token = { name: string; rank: number; index: number; experts: [number, number] }
@@ -23,6 +24,11 @@ const tokens: Token[] = [
 const routes: Route[] = tokens.flatMap(token => token.experts.map((expert, slot) => ({ token, expert, slot, target: Math.floor(expert / 2) })))
 const localTokens = (rank: number) => tokens.filter(t => t.rank === rank)
 const received = (expert: number) => routes.filter(r => r.expert === expert)
+const indexGroup = (expert: number, rank: number) => received(expert).filter(r => r.token.rank === rank)
+const indexValue = (expert: number, rank: number) => {
+  const route = indexGroup(expert, rank)[0]
+  return route ? route.token.index * 2 + route.slot : "—"
+}
 const expertRow = (route: Route) => received(route.expert).indexOf(route)
 const active = (route: Route) => (props.view === "combine" || step.value === 0) ? route.token.rank === gpu.value : route.target === gpu.value
 const dispatchEdges = computed(() => routes.filter(active))
@@ -31,11 +37,11 @@ const selectedToken = computed(() => localTokens(gpu.value)[tokenIndex.value])
 const needs = (token: Token) => [...new Set(token.experts.map(e => Math.floor(e / 2)))]
 const labels = computed(() => props.view === "dispatch" ? ["发布索引与计数", "接收卡拉取输入", "发布输入块就绪"] : ["专家结果写回", "等待专家卡通知", "源卡逐元素求和"])
 const title = computed(() => {
-  const titles: Record<string, string> = { placement: "四张 GPU 的源 token 与专家", symmem: "各卡拥有布局对应的 Symmem 缓冲", dispatch: labels.value[step.value], indices: "GPU 0 · E0 的接收索引列表", batch: "GPU 0 · E0 的输入行与来源记录", combine: labels.value[step.value] }
+  const titles: Record<string, string> = { placement: "四张 GPU 的源 token 与专家", symmem: "各卡拥有布局对应的 Symmem 缓冲", dispatch: labels.value[step.value], indices: "GPU 0 · 本地专家 × 来源 GPU", batch: "GPU 0 · E0 的输入行与来源记录", combine: labels.value[step.value] }
   return titles[props.view] || "MegaMoE 数据流"
 })
 const height = computed(() => {
-  const heights: Record<string, number> = { placement: 390, symmem: 670, dispatch: 650, indices: 300, batch: 460, combine: 710 }
+  const heights: Record<string, number> = { placement: 390, symmem: 670, dispatch: 650, indices: 415, batch: 460, combine: 710 }
   return heights[props.view] || 710
 })
 const regions = [
@@ -63,7 +69,7 @@ function combinePath(route: Route) {
 const description = computed(() => {
   if (props.view === "placement") return "四卡各有两个token和两个专家。a0选择E0/E3，a1选择E1/E4，b0选择E2/E5，b1选择E3/E6，c0选择E4/E7，c1选择E5/E0，d0选择E6/E1，d1选择E7/E2。颜色跟踪来源GPU，专家权重保存在所属卡。"
   if (props.view === "symmem") return "四卡的Symmem字段依次对应：状态与计数、接收索引、来源记录、源输入和scale、路由编号和alpha、L1输入缓冲、L2输入缓冲、Combine回传槽。专家权重在所属卡另行存放。"
-  if (props.view === "indices") return "GPU0的E0为G0、G1、G2、G3各预留相同容量的列表。G0有效1条，索引0表示a0的槽0；G2有效1条，索引3表示c1的槽1；G1、G3有效计数为0。虚线格为预留位置，读取范围由有效计数决定。"
+  if (props.view === "indices") return `GPU0在Dispatch前就为E0、E1与四张来源GPU的全部组合分配八组空间，每组容量Tmax，总容量8乘Tmax。当前${indicesFilled.value ? '已写入本轮索引：E0/G0为0，E0/G2为3，E1/G0为2，E1/G3为1，各有效1条，其余组有效0条。' : '所有组均已预留，有效计数为0。'}切换只改变索引与计数，各组的位置和容量保持一致。计数在状态区单独保存。`
   if (props.view === "batch") return "GPU0将本卡a0和GPU2的c1放成E0输入块的两行，每行512个特征，旁边分别保存G0/a0/s0和G2/c1/s1的来源记录。块容量64行，有效行数2。这两行的输入、scale、alpha写完后，该块就绪，L1可以读取。"
   if (props.view === "dispatch") return `当前为${title.value}，跟踪GPU${gpu.value}。源卡先发布索引和计数，专家卡随后按列表拉取输入并保存来源记录，输入块写完后通知L1。颜色跟踪来源GPU，高亮相关条目。`
   return `跟踪源GPU${gpu.value}的${selectedToken.value.name}。专家卡将结果写回原token的路由槽，源卡等待所选专家卡完成本轮全部L2写回的通知，再将两个槽逐元素相加。`
@@ -73,6 +79,10 @@ const description = computed(() => {
 <template>
   <div v-if="view === 'dispatch' || view === 'combine'" class="controls" role="group" aria-label="执行步骤">
     <button v-for="(label, index) in labels" :key="label" type="button" :aria-pressed="step === index" @click="step = index">{{ label }}</button>
+  </div>
+  <div v-if="view === 'indices'" class="controls" role="group" aria-label="索引空间分配与本轮写入">
+    <button type="button" :aria-pressed="!indicesFilled" @click="indicesFilled = false">Dispatch 前：预留空间</button>
+    <button type="button" :aria-pressed="indicesFilled" @click="indicesFilled = true">本轮：写入索引</button>
   </div>
   <div v-if="view === 'dispatch' || view === 'combine'" class="controls" role="group" aria-label="跟踪的 GPU">
     <span class="control-label">{{ view === 'dispatch' ? (step === 0 ? '跟踪发送卡' : '跟踪接收卡') : '跟踪源卡' }}</span>
@@ -195,19 +205,23 @@ const description = computed(() => {
 
       <g v-else-if="view === 'indices'">
         <text x="500" y="27" class="center strong">{{ title }}</text>
+        <rect x="135" y="78" width="835" height="279" rx="9" class="panel" />
         <g v-for="rank in ranks" :key="rank">
-          <rect :x="cx(rank) - 105" y="58" width="210" height="155" rx="8" class="panel" />
-          <text :x="cx(rank)" y="86" class="center">来源 G{{ rank }}</text>
-          <text :x="cx(rank)" y="111" class="center small muted">有效 {{ received(0).filter(r => r.token.rank === rank).length }} 条</text>
-          <g v-for="slot in [0, 1, 2]" :key="slot">
-            <rect :x="cx(rank) - 80 + slot * 48" y="128" width="43" height="38" rx="3" :class="slot === 0 && (rank === 0 || rank === 2) ? `tint owner${rank}` : 'pending'" />
-            <text :x="cx(rank) - 59 + slot * 48" y="153" class="center">{{ slot === 2 ? '…' : slot === 0 && rank === 0 ? '0' : slot === 0 && rank === 2 ? '3' : '—' }}</text>
-          </g>
-          <g v-if="rank === 0 || rank === 2">
-            <path :d="`M${cx(rank) - 59} 170 V236`" class="edge" :marker-end="arrow" />
-            <text :x="cx(rank) - 59" y="259" class="center">{{ rank === 0 ? 'a0 / s0' : 'c1 / s1' }}</text>
+          <text :x="242 + rank * 205" y="63" class="center">来源 G{{ rank }}</text>
+        </g>
+        <g v-for="expert in [0, 1]" :key="expert">
+          <text x="75" :y="159 + expert * 135" class="center strong">E{{ expert }}</text>
+          <g v-for="rank in ranks" :key="rank" :transform="`translate(${150 + rank * 205},${94 + expert * 135})`">
+            <rect width="185" height="110" rx="6" class="box" />
+            <text x="92" y="24" class="center small muted">有效 {{ indicesFilled ? indexGroup(expert, rank).length : 0 }} 条</text>
+            <g v-for="slot in [0, 1, 2, 3]" :key="slot">
+              <rect :x="13 + slot * 41" y="40" width="36" height="31" rx="3" :class="indicesFilled && slot === 0 && indexGroup(expert, rank).length ? `tint owner${rank}` : 'pending'" />
+              <text :x="31 + slot * 41" y="61" class="center">{{ slot === 2 ? '…' : indicesFilled && slot === 0 ? indexValue(expert, rank) : '—' }}</text>
+            </g>
+            <text x="92" y="95" class="center small">容量 Tₘₐₓ</text>
           </g>
         </g>
+        <text x="550" y="390" class="center strong">索引区总容量：2 × 4 × Tₘₐₓ 个位置</text>
       </g>
 
       <g v-else-if="view === 'batch'">
@@ -285,7 +299,7 @@ const description = computed(() => {
   </div>
   <figcaption v-if="view === 'placement'">颜色跟踪 token 的来源 GPU；专家权重保存在所属 GPU。</figcaption>
   <figcaption v-else-if="view === 'symmem'">按字段顺序展示布局；图中区段高度采用示意比例。</figcaption>
-  <figcaption v-else-if="view === 'indices'">每组容量为 Tₘₐₓ；数字为有效索引，虚线格为预留位置。</figcaption>
+  <figcaption v-else-if="view === 'indices'">虚线格已分配空间；数字为本轮有效索引。有效计数另存于状态区，图中标在对应组旁。</figcaption>
   <figcaption v-else-if="view === 'batch'">每行保存一个 token 的全部输入特征；来源记录保留这一行的回传位置。</figcaption>
   <figcaption v-else-if="view === 'combine'">每个回传槽保存一条 H 维专家贡献；实线为数据，虚线为完成通知。</figcaption>
   <figcaption v-else>颜色：token 来源；实线：索引或数据；虚线：就绪通知。高亮所选 GPU 的相关条目。</figcaption>
