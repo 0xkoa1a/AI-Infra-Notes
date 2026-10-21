@@ -13,6 +13,11 @@
 - [流水线并行中文译文](../../notes/ultrascale-playbook/pipeline-parallelism.md)：包含 AFAB、1F1B、交错阶段、Zero Bubble 和 DualPipe。
 - [专家并行中文译文](../../notes/ultrascale-playbook/expert-parallelism.md)。
 - [5D 并行概览中文译文](../../notes/ultrascale-playbook/5d-parallelism.md)。
+- [寻找最佳训练配置中文译文](../../notes/ultrascale-playbook/training-configuration.md)。
+- [GPU 底层优化中文译文](../../notes/ultrascale-playbook/gpu-optimization.md)：包含 kernel 优化、FlashAttention 和混合精度训练。
+- [结语中文译文](../../notes/ultrascale-playbook/conclusion.md)。
+- [参考资料中文译文](../../notes/ultrascale-playbook/references.md)。
+- [附录中文译文](../../notes/ultrascale-playbook/appendix.md)：包含 A0–A3、原文代码与输出，以及本书引用格式。
 - [完整 PDF](playbook.pdf)：作者发布的 PDF，直接打开即可离线阅读文字、公式与图片。
 - [网页版本](index.html)：保留网页正文、侧注、动态图、公式与交互图表；Tensor Parallelism 对应 `#tensor-parallelism`。
 - [Markdown 源文件](upstream.md)：作者提供的补充版本，已改为本地图片路径。该上游版本与网页措辞存在差别，并缺少部分交互图表和内嵌代码，请以网页和 PDF 为主要阅读版本。

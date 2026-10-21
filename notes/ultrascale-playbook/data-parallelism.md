@@ -12,7 +12,7 @@ order: 4
 
 ![image.png](./images/dp_diagram.png)
 
-> 如果你不熟悉 broadcast、gather 和 all-reduce 等分布式通信模式，我们在 [“A0：并行编程速成课”](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=a0%3A_parallel_programming_crash_course)中准备了一份简短教程。
+> 如果你不熟悉 broadcast、gather 和 all-reduce 等分布式通信模式，我们在 [“A0：并行编程速成课”](./appendix.md#a0-并行编程速成课)中准备了一份简短教程。
 
 每张 GPU 使用不同的微批次，意味着每张 GPU 上的梯度不同，因此，为了让不同 GPU 上的模型实例保持同步，我们会使用一种称为“all-reduce”的操作，对各个模型实例的梯度取平均。
 这一操作发生在反向传播期间、优化器更新之前。
@@ -383,9 +383,9 @@ ZeRO 通过沿数据并行维度划分优化器状态、梯度和参数来消除
 
 ### 重新审视显存占用
 
-[前文](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=memory_usage_in_transformers)讨论了标准训练中优化器状态、梯度和参数的显存占用。
+[前文](./first-steps.md#transformer-中的显存占用)讨论了标准训练中优化器状态、梯度和参数的显存占用。
 我们将模型的参数量记为 $\Psi$（之前记为 $N$，但这里使用 [ZeRO 原论文](https://arxiv.org/abs/1910.02054)的符号）。
-在使用 Adam 优化器的混合精度训练中（本书[后文](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=mixed_precision_training)会进一步讨论），需要保存的各项内容的显存占用为：
+在使用 Adam 优化器的混合精度训练中（本书[后文](./gpu-optimization.md#混合精度训练)会进一步讨论），需要保存的各项内容的显存占用为：
 
 - 模型参数（半精度，即 BF16/FP16）：$2\Psi$。
 - 模型梯度（半精度，即 BF16/FP16）：$2\Psi$。
@@ -528,7 +528,7 @@ ZeRO-3 来了！
 > 如果你想进一步了解 FSDP1、FSDP2 及其实现中的一些复杂之处，可以看看[这篇不错的博客](https://christianjmills.com/posts/mastering-llms-course-notes/conference-talk-012/)。
 
 不过，这里还有一些限制：只有当模型的一层能放入单张 GPU 时，DP 才能工作，而且 ZeRO 只能划分参数、梯度和优化器状态，不能划分激活显存！
-回顾[关于激活显存的讨论](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=memory_usage_in_transformers)，这部分显存会随序列长度和批大小增长。
+回顾[关于激活显存的讨论](./first-steps.md#transformer-中的显存占用)，这部分显存会随序列长度和批大小增长。
 我们可以直接限制两者，但实践中，我们不希望因为硬件限制而只能使用较短的序列长度训练。
 
 ![zero3_memoryusage.svg](./images/zero3_memoryusage.svg)

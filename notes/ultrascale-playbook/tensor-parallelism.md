@@ -394,7 +394,7 @@ $$
 答案是，既是也不是。
 在原始 TP 的前向传播中，每个 Transformer 块有两次 all-reduce 操作；而在 SP 中，每个 Transformer 块有两次 all-gather 和两次 reduce-scatter 操作。
 因此，SP 的通信操作次数是 TP 的两倍。
-但由于一次 all-reduce 操作可以分解为一次 all-gather 和一次 reduce-scatter（见附录中的 [“Ring AllReduce”](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=a_quick_focus_on_ring_allreduce) 一节），两者在通信成本上实际上是等价的。
+但由于一次 all-reduce 操作可以分解为一次 all-gather 和一次 reduce-scatter（见附录中的 [“Ring AllReduce”](./appendix.md#ring-allreduce) 一节），两者在通信成本上实际上是等价的。
 同样的推理也适用于反向传播，因为我们只需使用每个操作的共轭操作（no-op ↔ allreduce，allgather ↔ reducescatter）。
 
 如果你一直仔细阅读，就会发现我们说的是每层四次通信操作（注意力两次，MLP 两次）。

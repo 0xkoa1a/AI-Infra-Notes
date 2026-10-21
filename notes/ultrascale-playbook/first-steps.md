@@ -79,7 +79,7 @@ $$
 这些内容以张量形式保存，张量有不同的形状和精度。
 *形状*由批大小、序列长度、模型隐藏维度、注意力头数、词表大小，以及可能采用的模型分片等超参数决定，后面我们会看到。
 *精度*指 FP32、BF16 或 FP8 等格式，保存张量中的每个数值分别需要 4、2 或 1 字节。
-我们将在[“混合精度训练”](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=mixed_precision_training)一节完整讨论不同精度及其权衡；现在，只需记住不同格式的显存需求不同，这会影响我们需要保存的各项内容的显存占用。
+我们将在[“混合精度训练”](./gpu-optimization.md#混合精度训练)一节完整讨论不同精度及其权衡；现在，只需记住不同格式的显存需求不同，这会影响我们需要保存的各项内容的显存占用。
 
 那么，怎样才能根据这些变量快速确定显存占用？
 一种简单的方法是通过实验，直接测量。
@@ -89,7 +89,7 @@ $$
 使用 PyTorch profiler，我们可以了解训练过程中显存如何分配。
 我们可以看到，显存利用情况并非静态，而是在训练期间、以及一个训练步内部都有很大变化：
 
-> 关于如何剖析模型，可以参阅 [“A1：分布式训练性能剖析”](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=a1%3A_distributed_training_profiling)。
+> 关于如何剖析模型，可以参阅 [“A1：分布式训练性能剖析”](./appendix.md#a1-分布式训练性能剖析)。
 
 ![first_steps_memory_profile.svg](./images/first_steps_memory_profile.svg)
 
@@ -136,7 +136,7 @@ $$
 $$
 
 现在，我们来看看使用更低精度时，情况会怎样变化。
-出于稳定性考虑（见本书后文的[混合精度训练](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=mixed_precision_training)一节），我们通常不会完全使用低精度训练，而是混合使用较高和较低的精度，称为[“混合精度”](https://arxiv.org/abs/1710.03740)。
+出于稳定性考虑（见本书后文的[混合精度训练](./gpu-optimization.md#混合精度训练)一节），我们通常不会完全使用低精度训练，而是混合使用较高和较低的精度，称为[“混合精度”](https://arxiv.org/abs/1710.03740)。
 如今，混合精度训练一般默认使用 BF16 进行大部分计算，每个参数和梯度各需 2 字节，同时额外保存一份 FP32 模型权重和梯度副本，使每个参数总共需要 12 字节。
 除了参数和梯度，我们还需要保存优化器状态；对于 Adam 优化器，这包括动量和方差，通常为了数值稳定性而用 FP32 保存，各占 4 字节。
 
@@ -255,7 +255,7 @@ $$
 > 因此，另一种方法是计算所谓的**模型 FLOPS 利用率（MFU）**：与 HFU 不同，它只计入模型前向和反向传播所必需的运算，不将重计算包含在测量的 FLOPs 中。
 > 因此，这个值更取决于模型，而不是训练实现。
 
-如今，大多数训练框架都使用 FlashAttention（本书[后文](https://huggingface.co/spaces/nanotron/ultrascale-playbook?section=flash_attention_1-3)会进一步介绍），它的优化策略原生包含激活重计算：在反向传播中重新计算注意力分数和矩阵，而不保存它们。
+如今，大多数训练框架都使用 FlashAttention（本书[后文](./gpu-optimization.md#flashattention)会进一步介绍），它的优化策略原生包含激活重计算：在反向传播中重新计算注意力分数和矩阵，而不保存它们。
 因此，大多数使用 FlashAttention 的人已经在使用选择性重计算。
 
 正如你现在已经理解的，激活重计算会因为重算而略微增加 FLOPS 的数量，同时显著减少显存访问开销。
