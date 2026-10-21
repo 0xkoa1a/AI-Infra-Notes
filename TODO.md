@@ -42,3 +42,44 @@ VAE 5kpro xjw。VAE 可以问一下 xzy. 先把 i2i 的通信做得足够好，�
 算子自动融合，一种是编译器自动生成，一种是让 Agent 来做。或许可以结合一下（Agent 生成 IR）
 
 会给我一个 case 让我试试能不能用 ComFusion 做算子融合。
+
+
+
+---
+
+
+
+moe local reduction
+
+B 卡上试试
+
+先算一下 GEMM HBM 带宽 + reduction 带宽 假如寄存器够 流水编排 MFU MBU
+正常 GEMM 70% MFU， MBU 低。reduction MBU 高，MFU 低。
+
+寄存器能否打满 reduction。
+
+先读到 smem，l2 cache。
+
+流水编排：reduction 的访存不能阻塞 TMA，不能干扰 GEMM。
+
+
+---
+
+compiler：
+
+KDA: agent + kernel，许愿. skill? 
+
+解决 launch bound, sparse attn 前面有一堆小算子, cuda graph 解决，不同请求 shape 重新编译, 
+
+**MPK 的 task 怎么分最好**？产出指导意见.
+
+mega kernel 黑盒，profile 看不出东西。需要 profile 它的工具。各种 task 也做 timeline。作为调优 MPK 的依据。
+
+先做主线，然后用具体例子验证 练手: sparse attn 准备的部分，语言模型的优化（要求低延迟, batchsize 小 = 1, 20% load weight, 7, 80% launch, 即使 cuda graph 也没有充分并行 有的算子只用 1SM）. MPK 初中也是低延迟。
+
+大算子，已经成熟了，用库写好的，还需要融吗？我们不希望改大算子。
+
+MPK 通信怎么融进去。
+
+---
+
