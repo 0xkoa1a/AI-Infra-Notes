@@ -11,7 +11,7 @@ order: 2
 此外，即使完全重计算激活（这会带来约 30% 的高额计算开销），我们仍需要在显存中保留一些层边界处的激活，而这些激活会随序列长度线性增长。
 我们来看看上下文并行（context parallelism，CP）能如何帮助我们：
 
-![image.png](images/cp_memoryusage.svg)
+![image.png](./images/cp_memoryusage.svg)
 
 上下文并行的核心思想与序列并行类似（即沿序列长度拆分），但这种方法应用于那些已经采用张量并行的模块。
 因此，我们会沿两个维度拆分这些模块，从而也减小序列长度带来的影响。
@@ -58,14 +58,14 @@ order: 2
 
 下面的动画展示了四张 GPU 上的整个过程：
 
-![ring-attention.gif](images/ring-attention.gif)
+![ring-attention.gif](./images/ring-attention.gif)
 
 从这个动画中，你大概已经明白作者为什么将这种方法称为 [Ring Attention](https://arxiv.org/abs/2310.01889) 了！
 
 不过，这里有一个大问题：由于因果注意力矩阵的形状，朴素的 Ring Attention 实现会导致各张 GPU 之间严重不均衡。
 我们结合带有因果注意力掩码的注意力分数矩阵，来看看 softmax 计算：
 
-![cp_attnmask.svg](images/cp_attnmask.svg)
+![cp_attnmask.svg](./images/cp_attnmask.svg)
 
 softmax 按行计算，这意味着每当某张 GPU 收到一行中的所有 token 后，就可以计算这一行。
 我们可以看到，GPU 1 立刻就能计算，因为它最初就持有 token 1–4，不需要从其他 GPU 接收任何信息。
@@ -84,15 +84,15 @@ GPU 1 的工作量看起来也比其他 GPU 少得多。
 > 这里展示的是 Zig-Zag Attention，它与 [Striped Attention](https://arxiv.org/abs/2311.09431) 略有不同。
 > 关于两者差异的详细说明，请参阅[这段 GitHub 讨论](https://github.com/zhuzilin/ring-flash-attention/issues/2#issuecomment-2236746166)。
 
-![cp_zigzagmask.svg](images/cp_zigzagmask.svg)
+![cp_zigzagmask.svg](./images/cp_zigzagmask.svg)
 
 你还会看到，为了完成所有行的计算，每张 GPU 都需要来自其他所有 GPU 的信息。
 
 我们有两种让计算与通信重叠的通用方式：一种是执行一次通用的 all-gather，同时在每张 GPU 上汇集所有 key 和 value（类似 ZeRO-3 的方式）；另一种是按需在每张 GPU 上收集来自各张 GPU 的 key 和 value。
 
-![cp_overlap_allgather.svg](images/cp_overlap_allgather.svg)
+![cp_overlap_allgather.svg](./images/cp_overlap_allgather.svg)
 
-![cp_overlap_all2all.svg](images/cp_overlap_all2all.svg)
+![cp_overlap_all2all.svg](./images/cp_overlap_all2all.svg)
 
 这两种实现的关键差异在于通信模式和显存占用：
 

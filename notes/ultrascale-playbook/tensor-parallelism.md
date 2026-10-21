@@ -30,7 +30,7 @@ $$
 
 下面是这一运算的一个小例子：
 
-![TP 示意图](images/tp_diagram.svg)
+![TP 示意图](./images/tp_diagram.svg)
 
 我们来看看如何并行化这一运算！
 在张量并行中，张量沿某个维度被拆成 $N$ 个分片，并分配到 $N$ 张 GPU 上。
@@ -40,7 +40,7 @@ $$
 第一种选择是**按列（column-wise）**分片，也称为 *column-linear*：我们将完整的输入矩阵复制到每个工作进程，这需要一种称为**广播（broadcast）**的操作，并将权重矩阵按列拆分。
 然后，将输入与部分权重矩阵相乘，最后通过 all-gather 操作合并结果。
 
-![image.png](images/tp_diagram2.png)
+![image.png](./images/tp_diagram2.png)
 
 下面是按列进行张量并行的代码实现：
 
@@ -127,7 +127,7 @@ class ColumnParallelLinear(torch.nn.Module):
 不过，这也要求我们拆分输入，因此需要使用 **scatter** 操作（我们介绍的第四种分布式通信原语！），而不是 column-linear 分片中使用的 broadcast 操作。
 每个工作进程上的结果已经具有正确的形状，但还需要求和，因此这种情况也需要 all-reduce 操作：
 
-![image.png](images/tp_diagram3.png)
+![image.png](./images/tp_diagram3.png)
 
 下面是按行进行张量并行的实现：
 
@@ -216,7 +216,7 @@ Transformer 模型由两个主要构件组成：前馈多层感知机（MLP）�
 实际训练中不需要这次 broadcast，因为我们可以确保输入在各个 TP rank 之间已经同步。
 这种安排比先进行 row-linear 分片、再进行 column-linear 分片更高效，因为我们可以省去两次分片操作之间的 all-reduce。
 
-![image.png](images/tp_diagram4.png)
+![image.png](./images/tp_diagram4.png)
 
 现在，我们已经为 Transformer 的前馈部分找到了一种高效方案，接下来看看多头注意力块。
 
@@ -224,7 +224,7 @@ Transformer 模型由两个主要构件组成：前馈多层感知机（MLP）�
 对于多头注意力，列并行有一个很自然的解释：每张 GPU 为一个注意力头或一组注意力头计算注意力。
 同样的方法也适用于 [**多查询注意力（MQA）**](https://arxiv.org/abs/1911.02150)或[**分组查询注意力（GQA）**](https://arxiv.org/abs/2305.13245)，其中多个 query 共享 key 和 value。
 
-![image.png](images/tp_full_diagram.png)
+![image.png](./images/tp_full_diagram.png)
 
 我们能够如此有效地对 Attention 和 MLP 块应用张量并行，是因为它们存在天然独立的维度。
 Attention 块可以沿 `num_attention_heads` 维度并行化，因为每个注意力头都是独立工作的。
@@ -239,7 +239,7 @@ Attention 块可以沿 `num_attention_heads` 维度并行化，因为每个注�
 我们在模型的计算路径上直接加入了若干分布式通信原语，因此很难像在 ZeRO 中那样，用计算完全隐藏这些通信或使两者完全重叠，所以最终性能取决于计算和显存收益与新增通信开销之间的权衡。
 我们用图来说明：
 
-![张量并行中的前向传播](images/tp_overlap.svg)
+![张量并行中的前向传播](./images/tp_overlap.svg)
 
 > 可以将分块矩阵乘法与异步通信/计算结合起来，部分隐藏这些通信。
 
@@ -258,7 +258,7 @@ Attention 块可以沿 `num_attention_heads` 维度并行化，因为每个注�
 
 我们进一步看看，随着 TP 度提高，这种权衡会如何变化：
 
-![提高张量并行度对模型性能和批大小容量的影响](images/tp_scaling.svg)
+![提高张量并行度对模型性能和批大小容量的影响](./images/tp_scaling.svg)
 
 虽然提高 TP 会降低单张 GPU 的吞吐量（左图），但它使模型能够处理更大的批大小（右图），这体现了分布式训练中计算效率与可用显存之间的权衡。
 
@@ -270,7 +270,7 @@ Attention 块可以沿 `num_attention_heads` 维度并行化，因为每个注�
 尽管如此，张量并行通过将模型参数、梯度、优化器状态以及一定程度上的激活分布到各张 GPU 上，仍然能带来重要的显存收益。
 我们用一个 70B 参数模型来看看这种效果：
 
-![tp_memoryusage.svg](images/tp_memoryusage.svg)
+![tp_memoryusage.svg](./images/tp_memoryusage.svg)
 
 提高张量并行度会减少每张 GPU 上模型参数、梯度和优化器状态所需的显存，直到我们开始能够在一个包含 8 张 GPU 的节点上放下更大的模型。
 
@@ -313,7 +313,7 @@ $$
 下图展示了我们如何使用不同的集合通信操作（标记为 *f* 和 *g*），在张量并行区域和序列并行区域之间切换。
 实际执行时，我们从左向右进行：
 
-![前向传播：f = 空操作；f* = all-reduce；g = all-gather；g* = reduce-scatter。反向传播：f = all-reduce；f* = 空操作；g = reduce-scatter；g* = all-gather。SP 区域需要完整的 hidden_dim。](images/tp_sp_diagram.png)
+![前向传播：f = 空操作；f* = all-reduce；g = all-gather；g* = reduce-scatter。反向传播：f = all-reduce；f* = 空操作；g = reduce-scatter；g* = all-gather。SP 区域需要完整的 hidden_dim。](./images/tp_sp_diagram.png)
 
 关键挑战在于，高效地管理这些切换，同时保持较低的显存占用并确保正确性。
 
@@ -361,7 +361,7 @@ $$
 - *g\** 操作（reduce-scatter）进行归约，以确保前面的 row-linear 计算正确，同时沿序列维度进行分散。
 - *W1\** 和 *W2\** 的形状为 $(b,s/2,h)$。
 
-![image.png](images/tp_sp_diagram_zoomed.png)
+![image.png](./images/tp_sp_diagram_zoomed.png)
 
 序列并行的一个关键优势是，它减少了我们需要保存的最大激活大小。
 只使用张量并行时，我们必须在多个位置保存形状为 $(b,s,h)$ 的激活。
@@ -385,7 +385,7 @@ $$
 使用序列并行后，我们可以进一步节省激活显存，从而使用比单独使用张量并行时更大的批大小和更长的序列。
 我们来看看，这对前面的 70B 模型示例意味着什么：
 
-![tp_sp_memoryusage.svg](images/tp_sp_memoryusage.svg)
+![tp_sp_memoryusage.svg](./images/tp_sp_memoryusage.svg)
 
 我们再次大幅降低了每张 GPU 的最大显存占用，使我们能够在 TP+SP=16 时容纳 16k token 的序列——这比原始 TP 的情况有所改善！
 （正如上一节看到的，TP=16 仍然有点大，但下一节会介绍如何进一步改进。）
@@ -400,7 +400,7 @@ $$
 如果你一直仔细阅读，就会发现我们说的是每层四次通信操作（注意力两次，MLP 两次）。
 下面是使用 TP+SP 时 MLP 的性能剖析结果：
 
-![tp_sp_overlap.svg](images/tp_sp_overlap.svg)
+![tp_sp_overlap.svg](./images/tp_sp_overlap.svg)
 
 和原始 TP 一样，TP+SP 也很难与计算重叠，因此吞吐量高度依赖通信带宽。
 同样，和原始 TP 一样，TP+SP 通常也只在节点内部使用（将 TP 度控制在每个节点的 GPU 数量以内，例如 TP≤8）。
@@ -408,7 +408,7 @@ $$
 我们可以通过基准测试，观察随着张量并行规模扩大，这种通信开销如何变得越来越成问题。
 对于一个序列长度为 4,096 的 3B 参数模型，我们在启用 SP 的同时提高 TP 度，测量吞吐量和显存利用情况：
 
-![tp_sp_scaling.svg](images/tp_sp_scaling.svg)
+![tp_sp_scaling.svg](./images/tp_sp_scaling.svg)
 
 这里同样存在计算效率（左图）与显存容量（右图）之间的权衡。
 虽然更高的并行度通过减少激活显存，使模型能够处理大得多的批大小，但它也会降低单张 GPU 的吞吐量，尤其是在超过每个节点 GPU 数量所对应的阈值之后。
