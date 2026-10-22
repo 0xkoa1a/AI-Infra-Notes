@@ -102,6 +102,8 @@ GPU 1 的工作量看起来也比其他 GPU 少得多。
 - 需要更多临时显存，因为每张 GPU 都需要一次性保存所有 K/V 对。
 - 通信在一个步骤中完成，但显存开销更大。
 
+> **补充注记（非原文）：**这里 AllGather 的是完整 K/V，Q 和注意力输出仍按序列分片，每卡只计算自己负责的 query，后续 MLP 等也继续处理本地 token。因此，它保留了这些部分的序列拆分收益，但需要完整 K/V 的临时显存；下面的 Ring 方式通过逐块交换 K/V，进一步降低这部分临时显存需求。[Megatron Core 文档](https://docs.nvidia.com/megatron-core/developer-guide/latest/user-guide/features/context_parallel.html)
+
 **All-to-all（环形）实现：**
 
 - GPU 以环形模式交换 K/V 对，每次交换一个块。
