@@ -1,17 +1,23 @@
 ---
-title: "Reduce Sum：从 shared memory 到 warp shuffle"
+title: "Reduce Sum"
 order: 1
 ---
 
-# Reduce Sum：从 shared memory 到 warp shuffle
+# Reduce Sum
 
 ## 任务定义
 
-将长度为 `n` 的一维 `float` 数组求和，输出一个 `float` 标量。例如，输入 `[1, 2, 3, 4, 5, 6, 7, 8]`，输出 `36`。
+对一维数组的全部元素求和。例如，输入 `[1, 2, 3, 4, 5, 6, 7, 8]`，输出 `36`。
 
-下面取 `n >= 1`，输入和输出均位于 GPU 显存，使用 FP32 累加。实现沿着三个层次展开：线程累加自己的数据，block 合并线程的部分和，最后合并各 block 的结果。
+- 输入：GPU 显存中的连续数组 `x[n]`，类型为 FP32（`float`），`n >= 1`；输入为有限数，求和过程不溢出 FP32。
+- 输出：GPU 显存中的一个 FP32 标量 `y[0]`，输入保持不变。
+- 精度：累加器、部分和与输出均使用 FP32，允许不同加法顺序产生舍入差异。数值误差以同一份输入的 FP64 参考和为基准，比较绝对误差。
+
+并行实现先让每个 block 产生一个部分和，再将这些部分和合并成 `y[0]`。代码中的 `x`、`partial`、`y` 均为已分配、互不重叠的设备指针。
 
 ## 最朴素：一个线程顺序求和
+
+先让一个线程遍历整个输入，在寄存器中累加，直接输出最终结果。
 
 ```cpp
 __global__ void sum_serial(const float* x, float* y, int n) {
@@ -21,15 +27,14 @@ __global__ void sum_serial(const float* x, float* y, int n) {
     y[0] = sum;
 }
 
-// 启动一个线程。
 sum_serial<<<1, 1>>>(x, y, n);
 ```
 
-所有加法都依赖前一次结果，只有一个线程工作。下一步将输入分给多个线程，并行合并。
+只有一个线程工作，所有加法串行执行，无法利用 GPU 的线程并行。
 
 ## Block reduction：在 shared memory 中做树形归约
 
-每个 block 读取一段输入，每个线程读一个元素，先放入 shared memory，再两两相加。每轮将待合并的值减半，最终由线程 0 写出该 block 的部分和 `partial[blockIdx.x]`。[树形归约方法](https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf)
+将输入分给多个 block，每个 block 用 256 个线程读取最多 256 项。线程先各取一个值，再两两相加，每轮将待合并的值减半；这样，块内的串行加法链变成树形合并。每个 block 输出一个部分和。
 
 以一个 8 元素块为例：
 
@@ -51,85 +56,107 @@ flowchart TD
     N --> O
 ```
 
-代码固定每个 block 有 `B=256` 个线程。末块越界的线程填入 0，并继续参与同步。
-
 ```cpp
-constexpr int B = 256;
-
 __global__ void sum_shared(const float* x, float* partial, int n) {
+    constexpr int B = 256;
     __shared__ float s[B];
     int tid = threadIdx.x;
     int i = blockIdx.x * B + tid;
 
+    // 末块越界的线程贡献 0，并继续参与归约和同步。
     s[tid] = i < n ? x[i] : 0.0f;
-    __syncthreads();
+    __syncthreads();  // 等所有线程写好初始值。
 
     for (int step = 1; step < B; step *= 2) {
         if (tid % (2 * step) == 0)
             s[tid] += s[tid + step];
-        __syncthreads();
+        __syncthreads();  // 下一轮会读取本轮写入的部分和。
     }
 
     if (tid == 0)
         partial[blockIdx.x] = s[0];
 }
+
+// partial 至少容纳 blocks 个 float。
+int blocks = 1 + (n - 1) / 256;
+sum_shared<<<blocks, 256>>>(x, partial, n);
 ```
 
-`__syncthreads()` 保证本轮写完后，其他线程才能在下一轮读取。这个 kernel 输出多个部分和，跨 block 的合并方式放在文末。
+第一轮由线程 0、2、4、6 等参与，同一 warp 内的活跃线程间隔分布。同一轮的工作因此分散在多个没有完全参与运算的 warp 中。
 
 ## 连续线程归约：将活跃线程集中到前半段
 
-上一版第一轮由线程 0、2、4、6 等参与，同一 warp 内的活跃线程间隔分布。改为前半段线程读取后半段的值，活跃线程便集中到连续区间。
-
-将上面的归约循环替换为：
+活跃线程间隔分布时，同一轮的加法散在多个 warp 中。让前半段线程读取后半段的值，就能将活跃线程集中到连续区间，减少参与加法的 warp 数。每个 block 处理最多 256 项，输出一个部分和。
 
 ```cpp
-for (int stride = B / 2; stride > 0; stride /= 2) {
-    if (tid < stride)
-        s[tid] += s[tid + stride];
-    __syncthreads();
+__global__ void sum_contiguous(const float* x, float* partial, int n) {
+    constexpr int B = 256;
+    __shared__ float s[B];
+    int tid = threadIdx.x;
+    int i = blockIdx.x * B + tid;
+
+    s[tid] = i < n ? x[i] : 0.0f;
+    __syncthreads();  // 等初始值全部写入。
+
+    for (int stride = B / 2; stride > 0; stride /= 2) {
+        if (tid < stride)
+            s[tid] += s[tid + stride];
+        __syncthreads();  // 等本轮部分和写入，再进入下一轮。
+    }
+
+    if (tid == 0)
+        partial[blockIdx.x] = s[0];
 }
+
+int blocks = 1 + (n - 1) / 256;
+sum_contiguous<<<blocks, 256>>>(x, partial, n);
 ```
 
-对 256 个线程，参与计算的范围依次为前 128、64、32、16、8、4、2、1 个线程。前几轮可以让整个 warp 参与运算，避免将同一轮的工作分散到更多 warp 中。
+活跃线程数依次为 128、64、32、16、8、4、2、1。最后五轮只在 warp 0 内合并，仍使用了整个 block 的同步。
 
 ## Warp reduction：最后 32 个值只同步一个 warp
 
-当部分和剩下 32 个时，后续工作都由 warp 0 完成，可以将 block 同步缩小为 warp 同步。继续替换归约循环，加载数据和最终写出部分保持原样：
+整块同步在最后几轮仍涉及其他 warp。连续归约到剩下 32 个部分和后，它们都位于 warp 0 对应的 shared memory 位置，后续合并可以缩小为 warp 内同步。每个 block 将最多 256 项归约成一个部分和。
 
 ```cpp
-for (int stride = B / 2; stride >= 32; stride /= 2) {
-    if (tid < stride)
-        s[tid] += s[tid + stride];
-    __syncthreads();
-}
+__global__ void sum_warp_shared(const float* x, float* partial, int n) {
+    constexpr int B = 256;
+    __shared__ float s[B];
+    int tid = threadIdx.x;
+    int i = blockIdx.x * B + tid;
 
-if (tid < 32) {
-    for (int stride = 16; stride > 0; stride /= 2) {
+    s[tid] = i < n ? x[i] : 0.0f;
+    __syncthreads();  // 等初始值全部写入。
+
+    for (int stride = B / 2; stride >= 32; stride /= 2) {
         if (tid < stride)
             s[tid] += s[tid + stride];
-        __syncwarp();
+        __syncthreads();  // 这些轮次仍需要跨 warp 交换数据。
     }
+
+    if (tid < 32) {
+        for (int stride = 16; stride > 0; stride /= 2) {
+            if (tid < stride)
+                s[tid] += s[tid + stride];
+            __syncwarp();  // warp 0 的 32 个线程等本轮读写完成。
+        }
+    }
+
+    if (tid == 0)
+        partial[blockIdx.x] = s[0];
 }
+
+int blocks = 1 + (n - 1) / 256;
+sum_warp_shared<<<blocks, 256>>>(x, partial, n);
 ```
 
-最后五轮仍通过 shared memory 交换数据，`__syncwarp()` 保证 warp 内下一轮读到上一轮的写入；它们不再要求其他 warp 参加同步。[Warp 同步语义](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html)
+最后五轮已缩小为 warp 内同步，但线程之间仍通过 shared memory 写入、读取部分和。
 
 ## Warp shuffle：直接交换寄存器中的值
 
-`__shfl_down_sync(mask, v, offset)` 让当前线程取得同一 warp 中 `lane + offset` 的 `v`；超出 warp 范围时返回自身的值。按 16、8、4、2、1 的距离取值并相加，lane 0 最终得到 32 个线程的总和。**Warp 内的数据交换直接使用寄存器，省去 shared memory 的读写。**[Shuffle 归约](https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/)
+通过 shared memory 合并时，warp 内每轮都要写入、同步，再读取部分和。使用 shuffle 直接传递寄存器中的值，可以省去这套 shared memory 交换过程。
 
-```cpp
-__device__ __forceinline__ float warp_sum(float v) {
-    for (int offset = 16; offset > 0; offset /= 2)
-        v += __shfl_down_sync(0xffffffffu, v, offset);
-    return v;  // lane 0 保存整个 warp 的和。
-}
-```
-
-这里的 mask 表示 32 个 lane 全部参加。因此各线程先用自己的输入或 0 得到 `v`，再一起调用 `warp_sum`。
-
-一个 256 线程 block 有 8 个 warp：各 warp 先求和，各自的 lane 0 将结果写入 shared memory；同步一次后，warp 0 再合并这 8 个值。
+对一个 256 线程 block，8 个 warp 先各自求和，再通过 shared memory 交出 8 个结果，由 warp 0 完成最后一次合并。kernel 输出每个 block 的部分和。
 
 ```mermaid
 flowchart LR
@@ -141,24 +168,30 @@ flowchart LR
     F --> P["block 部分和"]
 ```
 
-同时让每个线程先在寄存器中累加多个元素，再进入跨线程归约。每次读取的下标增加整个 grid 的线程总数，这称为 grid-stride loop；同一轮相邻线程仍读取相邻元素，保持合并访存。完整 kernel 如下：
-
 ```cpp
+__device__ __forceinline__ float warp_sum(float v) {
+    for (int offset = 16; offset > 0; offset /= 2) {
+        // 32 个 lane 全部参加；从 lane + offset 取得其当前的 v。
+        // 超出 warp 范围时返回自身的值，最终只使用 lane 0 的总和。
+        v += __shfl_down_sync(0xffffffffu, v, offset);
+    }
+    return v;
+}
+
 __global__ void sum_shuffle(const float* x, float* partial, int n) {
+    constexpr int B = 256;
     __shared__ float warp_sums[B / 32];
     int tid = threadIdx.x;
     int lane = tid % 32;
     int warp = tid / 32;
+    int i = blockIdx.x * B + tid;
 
-    float v = 0.0f;
-    size_t step = size_t(gridDim.x) * B;
-    for (size_t i = size_t(blockIdx.x) * B + tid; i < n; i += step)
-        v += x[i];
-
+    // 越界线程贡献 0，所有 lane 一起执行 shuffle。
+    float v = i < n ? x[i] : 0.0f;
     v = warp_sum(v);
     if (lane == 0)
         warp_sums[warp] = v;
-    __syncthreads();
+    __syncthreads();  // 等 8 个 warp 都写好各自的部分和。
 
     if (warp == 0) {
         v = lane < B / 32 ? warp_sums[lane] : 0.0f;
@@ -167,23 +200,60 @@ __global__ void sum_shuffle(const float* x, float* partial, int n) {
             partial[blockIdx.x] = v;
     }
 }
+
+int blocks = 1 + (n - 1) / 256;
+sum_shuffle<<<blocks, 256>>>(x, partial, n);
 ```
 
-这一版每个 block 只用 8 个 shared memory 元素和一次 block 同步。线程内累加、warp 内 shuffle、warp 间 shared memory 分别处理各自范围的数据。
+Shared memory 从 256 个 `float` 减少到 8 个，block 同步只剩一次。输出仍是多个 block 的部分和，还需要合并为最终标量。
 
-## 跨 block：再启动一轮合并部分和
+## 跨 block：线程内多项累加，再合并部分和
 
-第一轮各 block 写出一个部分和，第二轮将它们当作新输入，再归约成一个标量。两次启动使用同一个 stream，第二轮会在第一轮完成后执行。
+每 256 项启动一个 block 时，大数组会产生很多部分和。限制第一轮 block 数，让每个线程先在寄存器中累加多项，就能控制待合并的部分和数量。第二轮将它们作为新输入，用一个 block 得到最终的 `y[0]`。
 
-下面示例将第一轮限制为最多 1024 个 block；多出的输入由 kernel 中的 grid-stride loop 处理，第二轮最多读取 1024 个部分和。
+下面给出完整的两轮实现。第一轮示例上限取 1024 个 block，临时数组 `partial` 至少容纳实际启动的 block 数量。
 
 ```cpp
-int blocks = 1 + (n - 1) / B;
+__device__ __forceinline__ float warp_sum_grid(float v) {
+    for (int offset = 16; offset > 0; offset /= 2) {
+        // 32 个 lane 全部参加，lane 0 最终得到整个 warp 的总和。
+        v += __shfl_down_sync(0xffffffffu, v, offset);
+    }
+    return v;
+}
+
+__global__ void sum_grid(const float* x, float* partial, int n) {
+    constexpr int B = 256;
+    __shared__ float warp_sums[B / 32];
+    int tid = threadIdx.x;
+    int lane = tid % 32;
+    int warp = tid / 32;
+
+    float v = 0.0f;
+    // 步长为整个 grid 的线程总数；同一轮相邻线程读取相邻元素。
+    size_t step = size_t(gridDim.x) * B;
+    for (size_t i = size_t(blockIdx.x) * B + tid; i < n; i += step)
+        v += x[i];
+
+    v = warp_sum_grid(v);
+    if (lane == 0)
+        warp_sums[warp] = v;
+    __syncthreads();  // 等所有 warp 写好部分和。
+
+    if (warp == 0) {
+        v = lane < B / 32 ? warp_sums[lane] : 0.0f;
+        v = warp_sum_grid(v);
+        if (lane == 0)
+            partial[blockIdx.x] = v;
+    }
+}
+
+int blocks = 1 + (n - 1) / 256;
 if (blocks > 1024) blocks = 1024;
 
-// partial 至少容纳 blocks 个 float，y 容纳一个 float。
-sum_shuffle<<<blocks, B, 0, stream>>>(x, partial, n);
-sum_shuffle<<<1, B, 0, stream>>>(partial, y, blocks);
+// 两次启动使用同一个 stream，第二轮会等待第一轮完成。
+sum_grid<<<blocks, 256, 0, stream>>>(x, partial, n);
+sum_grid<<<1, 256, 0, stream>>>(partial, y, blocks);
 ```
 
-`x`、`partial`、`y` 使用各自的显存区域。第二轮的线程先在寄存器中累加多个部分和，再走相同的 block 归约流程，最终写入 `y[0]`。
+第一轮每个 block 输出一个部分和；第二轮至多读取 1024 项，每个线程先累加自己负责的项，再通过两级 warp 归约写出最终结果。
