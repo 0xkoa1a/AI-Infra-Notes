@@ -2,14 +2,17 @@
 import { computed } from "vue"
 import MegaMoERouting from "./MegaMoERouting.vue"
 import MegaMoECompute from "./MegaMoECompute.vue"
+import MegaMoEKernelDetail from "./MegaMoEKernelDetail.vue"
 
-const props = defineProps<{ view: "placement" | "symmem" | "dispatch" | "indices" | "batch" | "compute" | "partition" | "readiness" | "combine" | "schedule" | "ring" }>()
+const props = defineProps<{ view: "placement" | "symmem" | "dispatch" | "indices" | "batch" | "compute" | "partition" | "readiness" | "combine" | "schedule" | "ring" | "input-stage" | "tmem-layout" | "epilogue-path" }>()
 const routing = computed(() => ["placement", "symmem", "dispatch", "indices", "batch", "combine"].includes(props.view))
+const detail = computed(() => ["input-stage", "tmem-layout", "epilogue-path"].includes(props.view))
 </script>
 
 <template>
   <figure class="mega-figure">
     <MegaMoERouting v-if="routing" :view="view" />
+    <MegaMoEKernelDetail v-else-if="detail" :view="view" />
     <MegaMoECompute v-else :view="view" />
   </figure>
 </template>

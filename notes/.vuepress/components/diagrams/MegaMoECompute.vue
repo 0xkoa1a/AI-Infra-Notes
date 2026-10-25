@@ -55,7 +55,7 @@ const description = computed(() => {
         </g>
         <text x="122" y="204" class="center small muted">[64, {{ layer === 0 ? 512 : 256 }}] + scale</text>
         <rect x="48" y="239" width="150" height="84" rx="5" class="tint weight" />
-        <text x="123" y="265" class="center">{{ layer === 0 ? 'W₁ 的输出列组' : 'W₂ 的输出列组' }}</text>
+        <text x="123" y="265" class="center">{{ layer === 0 ? 'W₁ 权重片段' : 'W₂ 权重片段' }}</text>
         <text x="123" y="289" class="center small">[256, {{ layer === 0 ? 512 : 256 }}]</text>
         <text x="123" y="310" class="center small muted">输出特征 [0,256)</text>
         <text v-if="layer === 0" x="122" y="351" class="center small">路由权重 α：a0 / c1 各一份</text>
