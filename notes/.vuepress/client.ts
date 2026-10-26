@@ -29,6 +29,7 @@ import UlyssesLayout from "./components/diagrams/UlyssesLayout.vue"
 import TensorParallelFlow from "./components/diagrams/TensorParallelFlow.vue"
 import ContextParallelFlow from "./components/diagrams/ContextParallelFlow.vue"
 import ContextParallelBalance from "./components/diagrams/ContextParallelBalance.vue"
+import PrefixSumDiagram from "./components/diagrams/PrefixSumDiagram.vue"
 
 defineMermaidConfig({
   flowchart: {
@@ -96,5 +97,6 @@ export default defineClientConfig({
     app.component("TensorParallelFlow", TensorParallelFlow)
     app.component("ContextParallelFlow", ContextParallelFlow)
     app.component("ContextParallelBalance", ContextParallelBalance)
+    app.component("PrefixSumDiagram", PrefixSumDiagram)
   },
 })
