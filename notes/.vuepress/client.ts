@@ -12,6 +12,7 @@ import MPKTwoGpuMatMul from "./components/diagrams/MPKTwoGpuMatMul.vue"
 import MPKTwoGpuFlow from "./components/diagrams/MPKTwoGpuFlow.vue"
 import BlackwellGemmDiagram from "./components/diagrams/BlackwellGemmDiagram.vue"
 import MegaMoEDiagram from "./components/diagrams/MegaMoEDiagram.vue"
+import MegaMoESharedDiagram from "./components/diagrams/MegaMoESharedDiagram.vue"
 import DeepEPBufferTransform from "./components/diagrams/DeepEPBufferTransform.vue"
 import DeepEPDedupExplorer from "./components/diagrams/DeepEPDedupExplorer.vue"
 import DeepEPHybridPipeline from "./components/diagrams/DeepEPHybridPipeline.vue"
@@ -78,6 +79,7 @@ export default defineClientConfig({
     app.component("MPKTwoGpuFlow", MPKTwoGpuFlow)
     app.component("BlackwellGemmDiagram", BlackwellGemmDiagram)
     app.component("MegaMoEDiagram", MegaMoEDiagram)
+    app.component("MegaMoESharedDiagram", MegaMoESharedDiagram)
     app.component("DeepEPBufferTransform", DeepEPBufferTransform)
     app.component("DeepEPDedupExplorer", DeepEPDedupExplorer)
     app.component("DeepEPHybridPipeline", DeepEPHybridPipeline)

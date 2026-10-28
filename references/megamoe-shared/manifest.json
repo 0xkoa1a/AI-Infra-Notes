@@ -1,0 +1,55 @@
+{
+  "description": "两份 ChatGPT 分享讲解的原始正文与图示定义；仅保存讲解内容，不包含页面会话数据。",
+  "sources": [
+    {
+      "url": "https://chatgpt.com/s/t_6ae1b3c4a510819195d906a3842c9015",
+      "original": "part-1.md",
+      "diagram_views": [
+        "moe-flow",
+        "cta-roles",
+        "token-pool",
+        "push-pull",
+        "dispatch-overlap",
+        "gemm-pipeline",
+        "combine-slots",
+        "expert-wave",
+        "x-stage"
+      ],
+      "citations": {
+        "turn295793view0": "https://arxiv.org/html/2607.23264v2",
+        "turn295793view1": "https://arxiv.org/html/2607.23264v2",
+        "turn643185view2": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/scheduler/mega_moe.cuh",
+        "turn643185view1": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/scheduler/mega_moe.cuh",
+        "turn285302view5": "https://llm-infra-atlas.github.io/moe/07_megamoe/",
+        "turn285302view6": "https://llm-infra-atlas.github.io/moe/07_megamoe/",
+        "turn507185view3": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn351026view1": "https://llm-infra-atlas.github.io/moe/07_megamoe/",
+        "turn289378view1": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn289378view2": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn289378view3": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn289378view0": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn285302view4": "https://llm-infra-atlas.github.io/moe/07_megamoe/",
+        "turn285302view2": "https://llm-infra-atlas.github.io/moe/07_megamoe/",
+        "turn507185view0": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn215171view2": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/csrc/apis/mega.hpp",
+        "turn285302view3": "https://llm-infra-atlas.github.io/moe/07_megamoe/",
+        "turn285302view1": "https://llm-infra-atlas.github.io/moe/07_megamoe/"
+      }
+    },
+    {
+      "url": "https://chatgpt.com/s/t_6ae1b42a45988191bd5a5dbd7e81dc53",
+      "original": "part-2.md",
+      "diagram_views": [
+        "metadata-layout",
+        "token-permute"
+      ],
+      "citations": {
+        "turn464995view3": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn979023view0": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn215103view3": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh",
+        "turn979023view1": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/layout/mega_moe.cuh",
+        "turn464995view0": "https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh"
+      }
+    }
+  ]
+}
