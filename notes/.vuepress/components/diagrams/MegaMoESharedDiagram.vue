@@ -58,16 +58,15 @@ const packed = [0, 2, 5, 1, 3, 4]
     </div>
 
     <div v-else-if="view === 'cta-roles'" class="vertical">
-      <div class="sub">每 CTA：12 或 16 warps · 每 warp 32 线程</div>
-      <div class="card"><div class="between"><strong>Dispatch warps</strong><span class="sub">4 warps · warp 0–3</span></div><span>Routing 计数、远端 token 拉取、写入 L1 token pool</span></div>
+      <div class="card"><div class="between"><strong>Dispatch</strong><span class="sub">4 warps</span></div><span>Routing 计数、远端 token 拉取、写入 L1 token pool</span></div>
       <div class="two">
-        <div class="card acts"><strong>TMA Load A</strong><span>1 warp · warp 4</span><span class="sub">Activation / scale</span></div>
-        <div class="card acts"><strong>TMA Load B</strong><span>1 warp · warp 5</span><span class="sub">Weight / scale</span></div>
+        <div class="card acts"><strong>TMA Load A</strong><span>1 warp</span><span class="sub">Activation / scale</span></div>
+        <div class="card acts"><strong>TMA Load B</strong><span>1 warp</span><span class="sub">Weight / scale</span></div>
       </div>
-      <div class="card acts"><div class="between"><strong>MMA Issue warp</strong><span>1 warp · warp 6</span></div><span class="sub">Leader CTA 发射 Blackwell UMMA 指令，结果进入 TMEM</span></div>
+      <div class="card acts"><div class="between"><strong>MMA Issue</strong><span>1 warp</span></div><span class="sub">Leader CTA 发射 Blackwell UMMA 指令，结果进入 TMEM</span></div>
       <div class="down" aria-hidden="true">↓</div>
-      <div class="card result"><div class="between"><strong>Epilogue warps</strong><span>4 或 8 warps · 1 或 2 warpgroups</span></div><span class="sub">warp 8–11 或 warp 8–15</span><span>L1：SwiGLU + FP8 quantize + L2 pool 写入</span><span>L2：BF16 转换 + NVLink remote store</span></div>
-      <div class="between sub"><span>保留位：1 warp · warp 7</span><span>BLOCK_M=64：Epilogue 4 warps；其余配置：8 warps</span></div>
+      <div class="card result"><div class="between"><strong>Epilogue</strong><span>4 或 8 warps</span></div><span>L1：SwiGLU + FP8 quantize + L2 pool 写入</span><span>L2：BF16 转换 + NVLink remote store</span></div>
+      <div class="between sub"><span>保留位：1 warp</span><span>BLOCK_M=64：Epilogue 4 warps；其余配置：8 warps</span></div>
     </div>
 
     <div v-else-if="view === 'token-pool'" class="vertical">
@@ -180,7 +179,7 @@ const packed = [0, 2, 5, 1, 3, 4]
       </svg>
     </div>
 
-    <figcaption v-if="view === 'cta-roles'">两个 CTA 组成 cluster 协同执行 MMA。数量与编号按单个 CTA 标注，配置依据 <a href="https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/csrc/jit_kernels/heuristics/mega_moe.hpp#L64-L99">88965b0 的线程配置</a>与 <a href="https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L643-L884">warp 分工</a>。</figcaption>
+    <figcaption v-if="view === 'cta-roles'">两个 CTA 组成 cluster 协同执行 MMA。数量按单个 CTA 标注，配置依据 <a href="https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/csrc/jit_kernels/heuristics/mega_moe.hpp#L64-L99">88965b0 的线程配置</a>与 <a href="https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L643-L884">warp 分工</a>。</figcaption>
     <figcaption v-else-if="view === 'token-pool'">示例中的 5 个 M tiles 总共占据 80 行。不同专家的 tile 不会混在一起，方便直接按 expert 索引读取权重。</figcaption>
     <figcaption v-else-if="view === 'dispatch-overlap'">同一时间，不同角色可以处理不同 tile。这里展示了依赖关系，方块长度不表示实际运行时长。</figcaption>
     <figcaption v-else-if="view === 'expert-wave'">每个方块在实际执行时仍会拆成多个 <code>(m_block, n_block)</code> GEMM tile。</figcaption>
