@@ -42,6 +42,14 @@ const tokens = [
   { name: "T4", expert: 9 }, { name: "T5", expert: 8 },
 ]
 const packed = [0, 2, 5, 1, 3, 4]
+type Span = { start: number; end: number }
+type BlockFlow = { block: number; dispatch: Span; loads: [Span, Span]; mmas: [Span, Span]; epilogue: Span }
+// Schematic positions: show first/last input segments and conservatively order shared TMA work.
+const blockFlows: BlockFlow[] = [
+  { block: 0, dispatch: { start: 200, end: 280 }, loads: [{ start: 300, end: 330 }, { start: 400, end: 430 }], mmas: [{ start: 340, end: 390 }, { start: 440, end: 490 }], epilogue: { start: 500, end: 540 } },
+  { block: 1, dispatch: { start: 340, end: 390 }, loads: [{ start: 440, end: 470 }, { start: 550, end: 580 }], mmas: [{ start: 500, end: 550 }, { start: 590, end: 640 }], epilogue: { start: 690, end: 730 } },
+  { block: 2, dispatch: { start: 590, end: 640 }, loads: [{ start: 650, end: 680 }, { start: 740, end: 770 }], mmas: [{ start: 690, end: 740 }, { start: 780, end: 830 }], epilogue: { start: 850, end: 890 } },
+]
 </script>
 
 <template>
@@ -100,25 +108,37 @@ const packed = [0, 2, 5, 1, 3, 4]
       <div class="card acts">Rank 1 的 Dispatch warp 将 x 放进 E 的 L1 token pool</div>
     </div>
 
-    <div v-else-if="view === 'dispatch-overlap'" class="scroll" role="region" tabindex="0" aria-label="Dispatch 与 L1 按块推进的依赖示意">
-      <svg viewBox="0 0 980 280" role="img" :aria-labelledby="`${id}-overlap-title`">
-        <title :id="`${id}-overlap-title`">Block 0、1、2 各自沿 Dispatch、L1 MMA、L1 Epi 推进；后续块的搬运可与此前块的计算重叠。</title>
+    <div v-else-if="view === 'dispatch-overlap'" class="scroll" role="region" tabindex="0" aria-label="Dispatch、GEMM TMA 加载、矩阵计算与后处理的依赖示意">
+      <svg viewBox="0 0 950 410" class="overlap-timeline" role="img" :aria-labelledby="`${id}-overlap-title ${id}-overlap-desc`">
+        <title :id="`${id}-overlap-title`">Dispatch → GEMM TMA Load A/B → L1 MMA → L1 Epilogue</title>
+        <desc :id="`${id}-overlap-desc`">Dispatch 用 TMA 经 NVLink 将远端输入读到自己的暂存 SMEM，再写入本卡 L1 pool。GEMM 加载 warp 将 pool 中的激活及本卡权重读到计算用 SMEM，按输入特征分段与 MMA 交错推进。三个块共用 TMA 资源，图中保守排列相关操作；只展开首段和末段，方块长度为示意。</desc>
         <defs><marker :id="`${id}-arrow`" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="arrowhead" /></marker></defs>
-        <g v-for="(lane, index) in [['Dispatch', 'NVLink / TMA'], ['L1 MMA', 'Tensor Core'], ['L1 Epi', 'CUDA Core / TMA']]" :key="lane[0]">
-          <text x="8" :y="46 + index * 76">{{ lane[0] }}</text>
-          <text x="8" :y="66 + index * 76" class="small muted">{{ lane[1] }}</text>
-          <path :d="`M155 ${72 + index * 76} H950`" class="guide" />
+        <g v-for="(lane, index) in [['Dispatch', 'NVLink / TMA', '远端 → 暂存 SMEM → Pool'], ['GEMM TMA Load A/B', 'TMA', 'Pool / 权重 → 计算 SMEM'], ['L1 MMA', 'Tensor Core', '逐段累加'], ['L1 Epilogue', 'CUDA Core / TMA', 'SwiGLU / 量化 / 写出']]" :key="lane[0]">
+          <text x="8" :y="44 + index * 90">{{ lane[0] }}</text>
+          <text x="8" :y="62 + index * 90" class="small muted">{{ lane[1] }}</text>
+          <text x="8" :y="80 + index * 90" class="small muted">{{ lane[2] }}</text>
+          <path :d="`M195 ${84 + index * 90} H925`" class="guide" />
         </g>
-        <g v-for="block in [0, 1, 2]" :key="block">
-          <g v-for="stage in [0, 1, 2]" :key="stage">
-            <rect :x="160 + block * 210 + stage * 130" :y="22 + stage * 76" :width="stage === 2 ? 90 : 110" height="40" rx="5" class="tint" :class="stage === 2 ? 'result' : 'acts'" />
-            <text :x="160 + block * 210 + stage * 130 + (stage === 2 ? 45 : 55)" :y="47 + stage * 76" class="center">Block {{ block }}</text>
+        <g v-for="flow in blockFlows" :key="flow.block">
+          <rect :x="flow.dispatch.start" y="30" :width="flow.dispatch.end - flow.dispatch.start" height="40" rx="5" class="tint acts" />
+          <text :x="(flow.dispatch.start + flow.dispatch.end) / 2" y="55" class="center">块 {{ flow.block }}</text>
+          <g v-for="(segments, row) in [flow.loads, flow.mmas]" :key="row">
+            <rect :x="segments[0].start" :y="120 + row * 90" :width="segments[1].end - segments[0].start" height="54" rx="5" class="span-outline" />
+            <text :x="(segments[0].start + segments[1].end) / 2" :y="138 + row * 90" class="center small">块 {{ flow.block }}</text>
+            <g v-for="(segment, index) in segments" :key="index">
+              <rect :x="segment.start" :y="146 + row * 90" :width="segment.end - segment.start" height="22" rx="3" class="tint" :class="row === 0 ? 'acts' : 'ready'" />
+              <text :x="(segment.start + segment.end) / 2" :y="162 + row * 90" class="center small">{{ index === 0 ? '首' : '末' }}</text>
+            </g>
+            <text :x="(segments[0].end + segments[1].start) / 2" :y="162 + row * 90" class="center small muted">…</text>
           </g>
-          <path :d="`M${270 + block * 210} 62 V86 H${290 + block * 210} V98 M${400 + block * 210} 138 V162 H${420 + block * 210} V174`" class="signal" :marker-end="arrow" />
+          <rect :x="flow.epilogue.start" y="300" :width="flow.epilogue.end - flow.epilogue.start" height="40" rx="5" class="tint result" />
+          <text :x="(flow.epilogue.start + flow.epilogue.end) / 2" y="325" class="center small">块 {{ flow.block }}</text>
+          <path :d="`M${flow.dispatch.end} 70 V95 H${flow.loads[0].start} V146`" class="signal" :marker-end="arrow" />
+          <path v-for="(segment, index) in flow.loads" :key="index" :d="`M${segment.end} 168 V194 H${flow.mmas[index].start} V236`" class="signal" :marker-end="arrow" />
+          <path :d="`M${flow.mmas[1].end} 258 V281 H${flow.epilogue.start} V300`" class="signal" :marker-end="arrow" />
         </g>
-        <path d="M160 259 H950" class="edge" :marker-end="arrow" />
-        <text x="945" y="249" text-anchor="end" class="small muted">t · 示意</text>
-        <text x="160" y="241" class="small muted">Dispatch 与 L1 Epi 涉及共享的 TMA 资源</text>
+        <path d="M200 398 H925" class="edge" :marker-end="arrow" />
+        <text x="920" y="388" text-anchor="end" class="small muted">t · 示意</text>
       </svg>
     </div>
 
@@ -181,7 +201,7 @@ const packed = [0, 2, 5, 1, 3, 4]
 
     <figcaption v-if="view === 'cta-roles'">两个 CTA 组成 cluster 协同执行 MMA。数量按单个 CTA 标注，配置依据 <a href="https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/csrc/jit_kernels/heuristics/mega_moe.hpp#L64-L99">88965b0 的线程配置</a>与 <a href="https://github.com/deepseek-ai/DeepGEMM/blob/88965b078186ee7510ab9fc4f1d5ebc19adfa8d1/deep_gemm/include/deep_gemm/impls/sm100_fp8_fp4_mega_moe.cuh#L643-L884">warp 分工</a>。</figcaption>
     <figcaption v-else-if="view === 'token-pool'">示例中的 5 个 M tiles 总共占据 80 行。不同专家的 tile 不会混在一起，方便直接按 expert 索引读取权重。</figcaption>
-    <figcaption v-else-if="view === 'dispatch-overlap'">同一时间，不同角色可以处理不同 tile。这里展示了依赖关系，方块长度不表示实际运行时长。</figcaption>
+    <figcaption v-else-if="view === 'dispatch-overlap'">GEMM 按输入特征分段加载并累加；虚线框内展开首、末段，省略中间段。共享 TMA 的操作按保守顺序排列，实际可重叠时仍会竞争 TMA 资源；长度为示意。</figcaption>
     <figcaption v-else-if="view === 'expert-wave'">每个方块在实际执行时仍会拆成多个 <code>(m_block, n_block)</code> GEMM tile。</figcaption>
     <figcaption v-else-if="view === 'x-stage'">这是依赖与执行顺序示意，实际 MMA、epilogue 可在不同 warp 中并行。</figcaption>
     <figcaption v-else-if="view === 'token-permute'">简化示意，实际还会按照 BLOCK_M 对各 Expert 的池空间进行对齐，并使用专门的 scale factor 布局。</figcaption>
@@ -217,6 +237,7 @@ const packed = [0, 2, 5, 1, 3, 4]
 .scroll { overflow-x: auto; }
 .scroll:focus-visible, .schedule-row:focus-visible { outline: 2px solid var(--infra-token-flow); outline-offset: 3px; }
 svg { display: block; width: 100%; min-width: 760px; font-family: inherit; }
+svg.overlap-timeline { min-width: 950px; }
 text { fill: var(--vp-c-text); font-size: 16px; }
 .center { text-anchor: middle; }
 .small { font-size: 13px; }
@@ -227,11 +248,12 @@ text { fill: var(--vp-c-text); font-size: 16px; }
 .ready { color: var(--infra-execution); }
 .edge { fill: none; stroke: var(--infra-diagram-muted); stroke-width: 1.5; }
 .guide { fill: none; stroke: var(--infra-diagram-line); }
+.span-outline { fill: none; stroke: var(--infra-diagram-line); stroke-dasharray: 4 3; }
 .signal { fill: none; stroke: var(--infra-execution); stroke-width: 1.4; stroke-dasharray: 4 3; }
 .arrowhead { fill: var(--infra-diagram-muted); }
 .token-edge { opacity: 0.55; }
 .label-bg { fill: var(--vp-c-bg); }
 figcaption { margin-top: 0.8rem; font-size: 0.85rem; color: var(--infra-diagram-muted); }
 @media (max-width: 560px) { .shared-mega { padding: 0.75rem; } .card { padding: 0.65rem; } .three { gap: 0.4rem; } }
-@media print { .scroll, .schedule-row { overflow: visible; } svg { min-width: 0; } .sequence { min-width: 0; } }
+@media print { .scroll, .schedule-row { overflow: visible; } svg, svg.overlap-timeline { min-width: 0; } .sequence { min-width: 0; } }
 </style>
