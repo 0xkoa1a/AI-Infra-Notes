@@ -1,5 +1,5 @@
 ---
-title: "MegaMoE：Expert-Wave 实现与 Dispatch 设计（分享讲解）"
+title: "MegaMoE：Expert-Wave 实现与 Dispatch 设计"
 order: 10
 ---
 
