@@ -5,11 +5,8 @@ order: 10
 
 # MegaMoE：Expert-Wave 实现与 Dispatch 设计
 
-> 本文将两份分享讲解按主题合并，保留技术正文、公式、代码示例与图注，图示按原结构用 Vue 重绘。原文主要讨论 DeepGEMM `88965b0` 的早期 Expert-Wave 实现。
->
-> 来源：[Kernel 的通信与计算融合](https://chatgpt.com/s/t_6ae1b3c4a510819195d906a3842c9015)、[Dispatch 的 metadata push 与 payload pull](https://chatgpt.com/s/t_6ae1b42a45988191bd5a5dbd7e81dc53)。
 
-MegaMoE 是 DeepSeek 在 [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM "DeepSeek GPU GEMM 算子库") 中实现的一个 **Persistent MoE Mega-Kernel**。它将 Expert Parallelism（EP）中的 Dispatch、两次 Grouped GEMM、SwiGLU、Combine 全部融合进一次 kernel launch，并利用 Blackwell 的 Tensor Core、TMA 和 NVLink 实现细粒度流水线。
+MegaMoE 是 DeepSeek 在 [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM "DeepSeek GPU GEMM 算子库") 中实现的一个 **Persistent MoE Mega-Kernel**。它将 Expert Parallelism 中的 Dispatch、两次 Grouped GEMM、SwiGLU、Combine 全部融合进一次 kernel launch，并利用 Blackwell 的 Tensor Core、TMA 和 NVLink 实现细粒度流水线。
 
 我查阅了 DeepGEMM 的实际 CUDA 实现。建议重点看以下四个文件：
 

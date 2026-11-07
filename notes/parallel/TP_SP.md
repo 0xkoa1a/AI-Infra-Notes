@@ -5,10 +5,6 @@ order: 2
 
 # Tensor Parallelism 与 Sequence Parallelism
 
-**TP 按特征切分线性层的权重与计算；SP 让 LayerNorm、Residual 等操作按 token 分工，减少激活复制和重复计算。**
-
-下文用 MLP 和 Attention 的前向图比较 **TP / TP+SP**。两种模式使用相同的权重分片，SP 改变子层之间的激活分布。[Megatron-LM](https://arxiv.org/abs/1909.08053)、[Sequence Parallelism](https://arxiv.org/html/2205.05198v1#S4.SS2.SSS2)
-
 ## Tensor Parallelism：让中间结果保持分片
 
 将 batch 与 sequence 两个维度展平，输入记为 $X\in\mathbb{R}^{T\times H}$。下文使用以下符号：

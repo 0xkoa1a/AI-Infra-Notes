@@ -83,3 +83,6 @@ MPK 通信怎么融进去。
 
 ---
 
+各个 attn microbench 加速比 在不同bs. bs=1 timeline(baseline + optimized) 纵坐标SM. 
+端到端加速比. 确认一下 开投机解码. 
+明早 写一份报告。
